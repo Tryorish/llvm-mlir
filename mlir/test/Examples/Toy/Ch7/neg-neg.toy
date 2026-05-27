@@ -1,0 +1,15 @@
+# RUN: toyc-ch7 %s -emit=mlir -opt 2>&1 | FileCheck %s
+
+def main() {
+  var a<2, 2> = [[1, 2], [3, 4]];
+  var b = neg(neg(a));
+  print(b);
+}
+
+# CHECK-LABEL: toy.func @main() {
+# CHECK-NEXT:    [[VAL_0:%.*]] = toy.constant dense<{{\[\[}}1.000000e+00, 2.000000e+00], [3.000000e+00, 4.000000e+00]]> : tensor<2x2xf64>
+# CHECK-NEXT:    toy.print [[VAL_0]] : tensor<2x2xf64>
+# CHECK-NEXT:    toy.return
+# CHECK-NEXT:  }
+
+# CHECK-NOT: toy.neg
