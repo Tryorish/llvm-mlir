@@ -74,6 +74,7 @@ enum Action {
   DumpAST,
   DumpMLIR,
   DumpMLIRAffine,
+  DumpMLIRGPU,
   DumpMLIRLLVM,
   DumpLLVMIR,
   RunJIT
@@ -85,6 +86,8 @@ static cl::opt<enum Action> emitAction(
     cl::values(clEnumValN(DumpMLIR, "mlir", "output the MLIR dump")),
     cl::values(clEnumValN(DumpMLIRAffine, "mlir-affine",
                           "output the MLIR dump after affine lowering")),
+    cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
+                          "output the MLIR dump after gpu lowering")),
     cl::values(clEnumValN(DumpMLIRLLVM, "mlir-llvm",
                           "output the MLIR dump after llvm lowering")),
     cl::values(clEnumValN(DumpLLVMIR, "llvm", "output the LLVM IR dump")),
@@ -150,10 +153,12 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     return 4;
 
   // Check to see what granularity of MLIR we are compiling to.
-  bool isLoweringToAffine = emitAction >= Action::DumpMLIRAffine;
+  bool isLoweringToGPU = emitAction == Action::DumpMLIRGPU;
+  bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
+                            emitAction >= Action::DumpMLIRLLVM;
   bool isLoweringToLLVM = emitAction >= Action::DumpMLIRLLVM;
 
-  if (enableOpt || isLoweringToAffine) {
+  if (enableOpt || isLoweringToAffine || isLoweringToGPU) {
     // Inline all functions into main and then delete them.
     pm.addPass(mlir::createInlinerPass());
 
@@ -180,6 +185,16 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
       optPM.addPass(mlir::affine::createLoopFusionPass());
       optPM.addPass(mlir::affine::createAffineScalarReplacementPass());
     }
+  }
+
+  if (isLoweringToGPU) {
+    // Partially lower the toy dialect to GPU operations.
+    pm.addPass(mlir::toy::createLowerToGPUPass());
+
+    // Add a few cleanups post lowering.
+    mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
+    optPM.addPass(mlir::createCanonicalizerPass());
+    optPM.addPass(mlir::createCSEPass());
   }
 
   if (isLoweringToLLVM) {
@@ -312,7 +327,10 @@ int main(int argc, char **argv) {
     return error;
 
   // If we aren't exporting to non-mlir, then we are done.
-  bool isOutputingMLIR = emitAction <= Action::DumpMLIRLLVM;
+  bool isOutputingMLIR = emitAction == Action::DumpMLIR ||
+                         emitAction == Action::DumpMLIRAffine ||
+                         emitAction == Action::DumpMLIRGPU ||
+                         emitAction == Action::DumpMLIRLLVM;
   if (isOutputingMLIR) {
     module->dump();
     return 0;
