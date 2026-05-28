@@ -20,6 +20,12 @@
 #include "toy/Parser.h"
 #include "toy/Passes.h"
 
+#include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
+#include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
@@ -77,6 +83,7 @@ enum Action {
   DumpMLIRAffine,
   DumpMLIRGPU,
   DumpMLIRGPUOutlined,
+  DumpMLIRGPUNVVM,
   DumpMLIRLLVM,
   DumpLLVMIR,
   RunJIT
@@ -92,6 +99,8 @@ static cl::opt<enum Action> emitAction(
                           "output the MLIR dump after gpu lowering")),
     cl::values(clEnumValN(DumpMLIRGPUOutlined, "mlir-gpu-outlined",
                           "output the MLIR dump after gpu kernel outlining")),
+    cl::values(clEnumValN(DumpMLIRGPUNVVM, "mlir-gpu-nvvm",
+                          "output the MLIR dump after gpu to nvvm lowering")),
     cl::values(clEnumValN(DumpMLIRLLVM, "mlir-llvm",
                           "output the MLIR dump after llvm lowering")),
     cl::values(clEnumValN(DumpLLVMIR, "llvm", "output the LLVM IR dump")),
@@ -158,8 +167,11 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
   // Check to see what granularity of MLIR we are compiling to.
   bool isLoweringToGPU = emitAction == Action::DumpMLIRGPU ||
-                         emitAction == Action::DumpMLIRGPUOutlined;
-  bool isOutliningGPU = emitAction == Action::DumpMLIRGPUOutlined;
+                         emitAction == Action::DumpMLIRGPUOutlined ||
+                         emitAction == Action::DumpMLIRGPUNVVM;
+  bool isOutliningGPU = emitAction == Action::DumpMLIRGPUOutlined ||
+                        emitAction == Action::DumpMLIRGPUNVVM;
+  bool isLoweringGPUToNVVM = emitAction == Action::DumpMLIRGPUNVVM;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction >= Action::DumpMLIRLLVM;
   bool isLoweringToLLVM = emitAction >= Action::DumpMLIRLLVM;
@@ -207,6 +219,18 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     pm.addPass(mlir::createGpuKernelOutliningPass());
     pm.addPass(mlir::createCanonicalizerPass());
     pm.addPass(mlir::createCSEPass());
+  }
+
+  if (isLoweringGPUToNVVM) {
+    pm.addPass(mlir::createSCFToControlFlowPass());
+
+    mlir::ConvertGpuOpsToNVVMOpsOptions gpuToNVVMOptions;
+    gpuToNVVMOptions.indexBitwidth = 64;
+    pm.addNestedPass<mlir::gpu::GPUModuleOp>(
+        mlir::createConvertGpuOpsToNVVMOps(gpuToNVVMOptions));
+    pm.addNestedPass<mlir::gpu::GPUModuleOp>(
+        mlir::createCanonicalizerPass());
+    pm.addNestedPass<mlir::gpu::GPUModuleOp>(mlir::createCSEPass());
   }
 
   if (isLoweringToLLVM) {
@@ -328,6 +352,10 @@ int main(int argc, char **argv) {
   // If we aren't dumping the AST, then we are compiling with/to MLIR.
   mlir::DialectRegistry registry;
   mlir::func::registerAllExtensions(registry);
+  mlir::arith::registerConvertArithToLLVMInterface(registry);
+  mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
+  mlir::registerConvertFuncToLLVMInterface(registry);
+  mlir::registerConvertMemRefToLLVMInterface(registry);
   mlir::LLVM::registerInlinerInterface(registry);
 
   mlir::MLIRContext context(registry);
@@ -343,6 +371,7 @@ int main(int argc, char **argv) {
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
                          emitAction == Action::DumpMLIRGPUOutlined ||
+                         emitAction == Action::DumpMLIRGPUNVVM ||
                          emitAction == Action::DumpMLIRLLVM;
   if (isOutputingMLIR) {
     module->dump();

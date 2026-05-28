@@ -387,4 +387,10 @@ toy.matmul
 gpu.launch_func + gpu.module + gpu.func kernel
 ```
 
-下一阶段才开始接 NVVM lowering 和 runtime 调用。
+下一阶段先接 device 侧 NVVM lowering，见：
+
+```text
+Tutorial/gpu/03-toy-matmul-gpu-nvvm-lowering.md
+```
+
+runtime 调用和真正执行会放到后续阶段。

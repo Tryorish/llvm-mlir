@@ -46,18 +46,24 @@ target_link_libraries(toyc-ch7
     ${conversion_libs}
     ${extension_libs}
     MLIRAnalysis
+    MLIRArithToLLVM
     MLIRBuiltinToLLVMIRTranslation
     MLIRCallInterfaces
     MLIRCastInterfaces
+    MLIRControlFlowToLLVM
     MLIRExecutionEngine
+    MLIRFuncToLLVM
     MLIRFunctionInterfaces
+    MLIRGPUToNVVMTransforms
     MLIRGPUTransforms
     MLIRIR
     MLIRLLVMCommonConversion
     MLIRLLVMToLLVMIRTranslation
     MLIRMemRefDialect
+    MLIRMemRefToLLVM
     MLIRParser
     MLIRPass
+    MLIRSCFToControlFlow
     MLIRSideEffectInterfaces
     MLIRTargetLLVMIRExport
     MLIRTransforms
