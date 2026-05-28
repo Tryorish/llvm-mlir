@@ -27,9 +27,11 @@ mlir/examples/toy/Ch7/include/toy/Passes.h
 
 mlir/examples/toy/Ch7/toyc.cpp
   新增 -emit=mlir-gpu，并把 GPU lowering 接入 pass pipeline。
+  第二阶段又新增 -emit=mlir-gpu-outlined，用于 kernel outlining。
 
 mlir/examples/toy/Ch7/CMakeLists.txt
   把 LowerToGPU.cpp 加进 toyc-ch7 的编译源文件。
+  第二阶段又显式链接 MLIRGPUTransforms。
 ```
 
 ## LowerToGPU.cpp 的整体结构
@@ -508,7 +510,9 @@ bool isLoweringToAffine = emitAction >= Action::DumpMLIRAffine;
 所以现在改成：
 
 ```cpp
-bool isLoweringToGPU = emitAction == Action::DumpMLIRGPU;
+bool isLoweringToGPU = emitAction == Action::DumpMLIRGPU ||
+                       emitAction == Action::DumpMLIRGPUOutlined;
+bool isOutliningGPU = emitAction == Action::DumpMLIRGPUOutlined;
 bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                           emitAction >= Action::DumpMLIRLLVM;
 bool isLoweringToLLVM = emitAction >= Action::DumpMLIRLLVM;
@@ -517,9 +521,10 @@ bool isLoweringToLLVM = emitAction >= Action::DumpMLIRLLVM;
 含义：
 
 ```text
--emit=mlir-gpu     只走 GPU lowering
--emit=mlir-affine  只走 affine lowering
--emit=mlir-llvm    仍走原来的 affine -> llvm 路线
+-emit=mlir-gpu           只走 Toy -> gpu.launch
+-emit=mlir-gpu-outlined  先走 Toy -> gpu.launch，再做 gpu kernel outlining
+-emit=mlir-affine        只走 affine lowering
+-emit=mlir-llvm          仍走原来的 affine -> llvm 路线
 ```
 
 ### GPU lowering pipeline
@@ -559,6 +564,7 @@ load Toy/MLIR
 bool isOutputingMLIR = emitAction == Action::DumpMLIR ||
                        emitAction == Action::DumpMLIRAffine ||
                        emitAction == Action::DumpMLIRGPU ||
+                       emitAction == Action::DumpMLIRGPUOutlined ||
                        emitAction == Action::DumpMLIRLLVM;
 ```
 
@@ -580,7 +586,11 @@ ${conversion_libs}
 ${extension_libs}
 ```
 
-通常能覆盖 GPU/SCF/MemRef/Arith 相关依赖。如果云平台编译时出现 GPU dialect 链接错误，再显式补相关 MLIR target。
+第二阶段使用 `createGpuKernelOutliningPass()`，因此还需要显式链接：
+
+```cmake
+MLIRGPUTransforms
+```
 
 ## 预期输出形态
 
@@ -675,4 +685,8 @@ toy.matmul
   linalg.matmul + tiling + vector/nvgpu/tensor core
 ```
 
-目前这次代码改动完成的是第一阶段。
+目前 `-emit=mlir-gpu` 完成第一阶段。第二阶段的 kernel outlining 见：
+
+```text
+Tutorial/gpu/02-toy-matmul-gpu-kernel-outlining.md
+```

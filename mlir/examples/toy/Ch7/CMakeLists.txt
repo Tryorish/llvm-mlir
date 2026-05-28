@@ -51,6 +51,7 @@ target_link_libraries(toyc-ch7
     MLIRCastInterfaces
     MLIRExecutionEngine
     MLIRFunctionInterfaces
+    MLIRGPUTransforms
     MLIRIR
     MLIRLLVMCommonConversion
     MLIRLLVMToLLVMIRTranslation

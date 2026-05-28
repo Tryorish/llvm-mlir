@@ -21,6 +21,7 @@
 #include "toy/Passes.h"
 
 #include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
@@ -75,6 +76,7 @@ enum Action {
   DumpMLIR,
   DumpMLIRAffine,
   DumpMLIRGPU,
+  DumpMLIRGPUOutlined,
   DumpMLIRLLVM,
   DumpLLVMIR,
   RunJIT
@@ -88,6 +90,8 @@ static cl::opt<enum Action> emitAction(
                           "output the MLIR dump after affine lowering")),
     cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
                           "output the MLIR dump after gpu lowering")),
+    cl::values(clEnumValN(DumpMLIRGPUOutlined, "mlir-gpu-outlined",
+                          "output the MLIR dump after gpu kernel outlining")),
     cl::values(clEnumValN(DumpMLIRLLVM, "mlir-llvm",
                           "output the MLIR dump after llvm lowering")),
     cl::values(clEnumValN(DumpLLVMIR, "llvm", "output the LLVM IR dump")),
@@ -153,7 +157,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     return 4;
 
   // Check to see what granularity of MLIR we are compiling to.
-  bool isLoweringToGPU = emitAction == Action::DumpMLIRGPU;
+  bool isLoweringToGPU = emitAction == Action::DumpMLIRGPU ||
+                         emitAction == Action::DumpMLIRGPUOutlined;
+  bool isOutliningGPU = emitAction == Action::DumpMLIRGPUOutlined;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction >= Action::DumpMLIRLLVM;
   bool isLoweringToLLVM = emitAction >= Action::DumpMLIRLLVM;
@@ -195,6 +201,12 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());
     optPM.addPass(mlir::createCSEPass());
+  }
+
+  if (isOutliningGPU) {
+    pm.addPass(mlir::createGpuKernelOutliningPass());
+    pm.addPass(mlir::createCanonicalizerPass());
+    pm.addPass(mlir::createCSEPass());
   }
 
   if (isLoweringToLLVM) {
@@ -330,6 +342,7 @@ int main(int argc, char **argv) {
   bool isOutputingMLIR = emitAction == Action::DumpMLIR ||
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
+                         emitAction == Action::DumpMLIRGPUOutlined ||
                          emitAction == Action::DumpMLIRLLVM;
   if (isOutputingMLIR) {
     module->dump();
