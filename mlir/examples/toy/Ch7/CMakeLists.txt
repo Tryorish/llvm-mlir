@@ -61,6 +61,7 @@ target_link_libraries(toyc-ch7
     MLIRLLVMToLLVMIRTranslation
     MLIRMemRefDialect
     MLIRMemRefToLLVM
+    MLIRNVVMToLLVM
     MLIRParser
     MLIRPass
     MLIRSCFToControlFlow
