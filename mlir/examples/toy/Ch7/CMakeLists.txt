@@ -67,4 +67,5 @@ target_link_libraries(toyc-ch7
     MLIRSideEffectInterfaces
     MLIRTargetLLVMIRExport
     MLIRTransforms
+    MLIRUBToLLVM
     )

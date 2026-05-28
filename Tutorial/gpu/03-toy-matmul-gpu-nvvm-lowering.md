@@ -75,6 +75,7 @@ device:
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 ```
 
 这些头文件提供第三阶段需要的 pass 和转换接口。
@@ -142,9 +143,16 @@ mlir::arith::registerConvertArithToLLVMInterface(registry);
 mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
 mlir::registerConvertFuncToLLVMInterface(registry);
 mlir::registerConvertMemRefToLLVMInterface(registry);
+mlir::ub::registerConvertUBToLLVMInterface(registry);
 ```
 
 否则 pass 可能无法把 kernel 内部的非 GPU op 一起降干净。
+其中 `UBToLLVM` 是为了处理 `ub` dialect 承诺的 LLVM conversion interface；如果不注册，`convert-gpu-to-nvvm` 遍历已加载 dialect 时可能报：
+
+```text
+LLVM ERROR: checking for an interface (`mlir::ConvertToLLVMPatternInterface`)
+that was promised by dialect 'ub' but never implemented
+```
 
 ### 第三阶段 pipeline
 
@@ -211,6 +219,7 @@ MLIRFuncToLLVM
 MLIRGPUToNVVMTransforms
 MLIRMemRefToLLVM
 MLIRSCFToControlFlow
+MLIRUBToLLVM
 ```
 
 其中最关键的是：
