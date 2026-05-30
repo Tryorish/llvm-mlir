@@ -171,15 +171,22 @@ LLVM Translation failed for operation: builtin.unrealized_conversion_cast
 #include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
 #include "mlir/Conversion/GPUCommon/GPUToLLVM.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
 ```
 
 并注册：
 
 ```cpp
+mlir::vector::registerConvertVectorToLLVMInterface(registry);
 mlir::gpu::registerConvertGpuToLLVMInterface(registry);
 ```
 
-这个 interface 让 GPU 相关 op 能参与 `gpu-to-llvm` 的 host lowering。
+这些 interface 让 `gpu-to-llvm` 遍历已加载 dialect 时，能找到对应的 LLVM conversion pattern。缺少 vector 注册时会报：
+
+```text
+checking for an interface (`mlir::ConvertToLLVMPatternInterface`)
+that was promised by dialect 'vector' but never implemented
+```
 
 ## CMakeLists.txt 的改动
 
@@ -188,6 +195,7 @@ mlir::gpu::registerConvertGpuToLLVMInterface(registry);
 ```cmake
 MLIRGPUToGPURuntimeTransforms
 MLIRReconcileUnrealizedCasts
+MLIRVectorToLLVM
 ```
 
 原因：
@@ -198,6 +206,9 @@ MLIRGPUToGPURuntimeTransforms
 
 MLIRReconcileUnrealizedCasts
   清理 conversion 过程中产生的 unrealized_conversion_cast。
+
+MLIRVectorToLLVM
+  提供 vector dialect 的 ConvertToLLVMPatternInterface external model。
 ```
 
 ## 预期 MLIR 形态

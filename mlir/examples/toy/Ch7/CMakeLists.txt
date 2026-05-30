@@ -76,4 +76,5 @@ target_link_libraries(toyc-ch7
     MLIRTargetLLVMIRExport
     MLIRTransforms
     MLIRUBToLLVM
+    MLIRVectorToLLVM
     )

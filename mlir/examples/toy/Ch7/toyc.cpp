@@ -32,6 +32,7 @@
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
 #include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
@@ -420,6 +421,7 @@ int main(int argc, char **argv) {
   mlir::registerConvertMemRefToLLVMInterface(registry);
   mlir::registerConvertNVVMToLLVMInterface(registry);
   mlir::ub::registerConvertUBToLLVMInterface(registry);
+  mlir::vector::registerConvertVectorToLLVMInterface(registry);
   mlir::gpu::registerConvertGpuToLLVMInterface(registry);
   mlir::LLVM::registerInlinerInterface(registry);
   mlir::registerBuiltinDialectTranslation(registry);
