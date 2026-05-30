@@ -278,6 +278,24 @@ struct MatMulOpLowering : public ConversionPattern {
     auto lhsType = llvm::cast<MemRefType>(operands[0].getType());
     auto rhsType = llvm::cast<MemRefType>(operands[1].getType());
 
+    auto lhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
+        loc, lhsType, Type(), ValueRange{}, ValueRange{}, ValueRange{},
+        UnitAttr());
+    auto rhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
+        loc, rhsType, Type(), ValueRange{}, ValueRange{}, ValueRange{},
+        UnitAttr());
+    auto outDeviceAlloc = rewriter.create<gpu::AllocOp>(
+        loc, memRefType, Type(), ValueRange{}, ValueRange{}, ValueRange{},
+        UnitAttr());
+    Value lhsDevice = lhsDeviceAlloc.getMemref();
+    Value rhsDevice = rhsDeviceAlloc.getMemref();
+    Value outDevice = outDeviceAlloc.getMemref();
+
+    rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, lhsDevice,
+                                   operands[0]);
+    rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, rhsDevice,
+                                   operands[1]);
+
     int64_t m = lhsType.getShape()[0];
     int64_t k = lhsType.getShape()[1];
     int64_t n = rhsType.getShape()[1];
@@ -324,20 +342,27 @@ struct MatMulOpLowering : public ConversionPattern {
             ValueRange iterArgs) {
           Value acc = iterArgs[0];
           Value lhs =
-              nestedBuilder.create<memref::LoadOp>(loc, operands[0],
+              nestedBuilder.create<memref::LoadOp>(loc, lhsDevice,
                                                    ValueRange{i, ivK});
           Value rhs =
-              nestedBuilder.create<memref::LoadOp>(loc, operands[1],
+              nestedBuilder.create<memref::LoadOp>(loc, rhsDevice,
                                                    ValueRange{ivK, j});
           Value prod = nestedBuilder.create<arith::MulFOp>(loc, lhs, rhs);
           Value sum = nestedBuilder.create<arith::AddFOp>(loc, acc, prod);
           nestedBuilder.create<scf::YieldOp>(loc, sum);
         });
 
-    rewriter.create<memref::StoreOp>(loc, forK.getResult(0), alloc,
+    rewriter.create<memref::StoreOp>(loc, forK.getResult(0), outDevice,
                                      ValueRange{i, j});
     rewriter.setInsertionPointToEnd(&launch.getBody().front());
     rewriter.create<gpu::TerminatorOp>(loc);
+
+    rewriter.setInsertionPointAfter(launch);
+    rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, alloc,
+                                   outDevice);
+    rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, lhsDevice);
+    rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, rhsDevice);
+    rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, outDevice);
 
     rewriter.replaceOp(op, alloc);
     return success();

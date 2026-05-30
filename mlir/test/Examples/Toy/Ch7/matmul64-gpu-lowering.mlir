@@ -18,6 +18,11 @@ module {
 // CHECK-DAG:     [[C64:%.*]] = arith.constant 64 : index
 // CHECK-DAG:     [[ZERO:%.*]] = arith.constant 0.000000e+00 : f64
 // CHECK:         [[OUT:%.*]] = memref.alloc() : memref<64x64xf64>
+// CHECK:         [[LHS_DEV:%.*]] = gpu.alloc () : memref<64x64xf64>
+// CHECK:         [[RHS_DEV:%.*]] = gpu.alloc () : memref<64x64xf64>
+// CHECK:         [[OUT_DEV:%.*]] = gpu.alloc () : memref<64x64xf64>
+// CHECK:         gpu.memcpy [[LHS_DEV]]
+// CHECK:         gpu.memcpy [[RHS_DEV]]
 // CHECK:         gpu.launch
 // CHECK-SAME:      blocks({{.*}}) in ({{.*}} = [[C4]], {{.*}} = [[C4]], {{.*}} = [[C1]])
 // CHECK-SAME:      threads({{.*}}) in ({{.*}} = [[C16]], {{.*}} = [[C16]], {{.*}} = [[C1]])
@@ -32,8 +37,12 @@ module {
 // CHECK:               [[ADD:%.*]] = arith.addf {{.*}}, [[MUL]] : f64
 // CHECK:               scf.yield [[ADD]] : f64
 // CHECK:             }
-// CHECK:             memref.store [[SUM]], [[OUT]]
+// CHECK:             memref.store [[SUM]], [[OUT_DEV]]
 // CHECK:           }
 // CHECK:           gpu.terminator
+// CHECK:         gpu.memcpy [[OUT]], [[OUT_DEV]]
+// CHECK:         gpu.dealloc [[LHS_DEV]]
+// CHECK:         gpu.dealloc [[RHS_DEV]]
+// CHECK:         gpu.dealloc [[OUT_DEV]]
 // CHECK:         toy.print [[OUT]] : memref<64x64xf64>
 // CHECK-NOT:     toy.matmul

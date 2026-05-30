@@ -15,11 +15,14 @@ module {
 // CHECK: @llvm.global_ctors
 // CHECK: @llvm.global_dtors
 // CHECK: call ptr @mgpuModuleLoad
+// CHECK: call ptr @mgpuMemAlloc
+// CHECK: call void @mgpuMemcpy
 // CHECK: call ptr @mgpuModuleGetFunction
 // CHECK: call ptr @mgpuStreamCreate()
 // CHECK: call void @mgpuLaunchKernel
 // CHECK: call void @mgpuStreamSynchronize
 // CHECK: call void @mgpuStreamDestroy
+// CHECK: call void @mgpuMemFree
 // CHECK: call void @mgpuModuleUnload
 // CHECK-NOT: unrealized_conversion_cast
 // CHECK-NOT: gpu.launch_func

@@ -11,7 +11,10 @@ module {
 }
 
 // CHECK-LABEL: llvm.func @main()
+// CHECK:         llvm.call @mgpuMemAlloc
+// CHECK:         llvm.call @mgpuMemcpy
 // CHECK:         gpu.launch_func
+// CHECK:         llvm.call @mgpuMemFree
 // CHECK:         llvm.call @printf
 // CHECK:       gpu.binary
 // CHECK:         #gpu.object<#nvvm.target
