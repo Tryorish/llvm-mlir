@@ -332,7 +332,13 @@ ninja -C build FileCheck llvm-lit
 
 第三阶段后，device kernel 已经接近 NVVM/LLVM 层，但还没有变成可运行程序。
 
-下一阶段要处理：
+下一阶段先把 `gpu.module` 包装成 `gpu.binary`，见：
+
+```text
+Tutorial/gpu/04-toy-matmul-gpu-binary-lowering.md
+```
+
+后续真正运行还需要处理：
 
 ```text
 1. gpu.module -> gpu.binary / fatbin。
