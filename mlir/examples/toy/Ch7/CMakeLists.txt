@@ -46,6 +46,7 @@ target_link_libraries(toyc-ch7
     ${conversion_libs}
     ${extension_libs}
     MLIRAnalysis
+    MLIRAffineToStandard
     MLIRArithToLLVM
     MLIRBuiltinToLLVMIRTranslation
     MLIRCallInterfaces
