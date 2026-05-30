@@ -35,9 +35,10 @@ module attributes {gpu.container_module} {
 
 ```text
 1. toy.print -> scf.for + llvm.call @printf
-2. scf.for/scf.if -> cf.br/cf.cond_br
-3. func/memref/arith/cf -> LLVM dialect
-4. 保留 gpu.binary 和 gpu.launch_func，交给 LLVM IR translation 做 offloading 翻译
+2. affine.load/store/for -> memref/scf/arith
+3. scf.for/scf.if -> cf.br/cf.cond_br
+4. func/memref/arith/cf -> LLVM dialect
+5. 保留 gpu.binary 和 gpu.launch_func，交给 LLVM IR translation 做 offloading 翻译
 ```
 
 注意：`gpu-to-llvm` 这个 MLIR pass 会把 host 侧类型和普通 op 转成 LLVM dialect，但它不会在 MLIR 文本中直接删除 `gpu.launch_func`。真正把 `gpu.launch_func` 翻译成 `mgpuLaunchKernel`，发生在：
@@ -89,15 +90,25 @@ Toy -> gpu.launch
 ```cpp
 if (isLoweringGPUHost) {
   pm.addPass(mlir::toy::createLowerPrintToLLVMPass());
+  pm.addPass(mlir::createLowerAffinePass());
   pm.addPass(mlir::createSCFToControlFlowPass());
 
   mlir::GpuToLLVMConversionPassOptions gpuToLLVMOptions;
+  gpuToLLVMOptions.kernelBarePtrCallConv = true;
   pm.addPass(mlir::createGpuToLLVMConversionPass(gpuToLLVMOptions));
   pm.addPass(mlir::createReconcileUnrealizedCastsPass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
 }
 ```
+
+`createLowerAffinePass()` 在这里很关键。Toy 常量 lowering 仍会生成 `affine.store` 来初始化 memref。如果直接进入 `gpu-to-llvm`，memref 已经被转换成 LLVM descriptor，但 `affine.store` 还要求 memref 操作数，conversion driver 就会插入：
+
+```mlir
+builtin.unrealized_conversion_cast
+```
+
+所以第五阶段必须先把 host 侧残留的 affine op 降掉，再进入 `gpu-to-llvm`。
 
 `createGpuToLLVMConversionPass()` 的作用：
 
@@ -114,6 +125,43 @@ gpu.launch_func 需要和 gpu.binary 配合。
 LLVM IR translation 会查找对应的 gpu.binary，把 binary 嵌入 LLVM module，
 并把 launch_func 翻译成 mgpuModuleGetFunction + mgpuLaunchKernel。
 ```
+
+## kernel bare pointer ABI
+
+第五阶段同时把 device 和 host launch 两边的 kernel 参数 ABI 设成 bare pointer：
+
+```cpp
+mlir::ConvertGpuOpsToNVVMOpsOptions gpuToNVVMOptions;
+gpuToNVVMOptions.indexBitwidth = 64;
+gpuToNVVMOptions.useBarePtrCallConv = true;
+
+mlir::GpuToLLVMConversionPassOptions gpuToLLVMOptions;
+gpuToLLVMOptions.kernelBarePtrCallConv = true;
+```
+
+这两边必须一致：
+
+```text
+convert-gpu-to-nvvm
+  决定 gpu.module 里的 kernel 函数参数长什么样。
+
+gpu-to-llvm
+  决定 host 侧 gpu.launch_func 传给 kernel 的参数长什么样。
+```
+
+如果 device 侧使用 memref descriptor，而 host 侧 launch 参数转换没有完全消干净，就可能在 `-emit=llvm-gpu` 时残留：
+
+```text
+builtin.unrealized_conversion_cast
+```
+
+然后 LLVM IR translation 会报：
+
+```text
+LLVM Translation failed for operation: builtin.unrealized_conversion_cast
+```
+
+使用 bare pointer ABI 后，静态 memref 参数会按底层数据指针传给 kernel，能避免这类 descriptor bridge cast 卡在最终 translation 前。
 
 ## 新增 registry
 

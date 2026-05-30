@@ -257,6 +257,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
     mlir::ConvertGpuOpsToNVVMOpsOptions gpuToNVVMOptions;
     gpuToNVVMOptions.indexBitwidth = 64;
+    gpuToNVVMOptions.useBarePtrCallConv = true;
     pm.addNestedPass<mlir::gpu::GPUModuleOp>(
         mlir::createConvertGpuOpsToNVVMOps(gpuToNVVMOptions));
     pm.addNestedPass<mlir::gpu::GPUModuleOp>(
@@ -280,9 +281,11 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
   if (isLoweringGPUHost) {
     pm.addPass(mlir::toy::createLowerPrintToLLVMPass());
+    pm.addPass(mlir::createLowerAffinePass());
     pm.addPass(mlir::createSCFToControlFlowPass());
 
     mlir::GpuToLLVMConversionPassOptions gpuToLLVMOptions;
+    gpuToLLVMOptions.kernelBarePtrCallConv = true;
     pm.addPass(mlir::createGpuToLLVMConversionPass(gpuToLLVMOptions));
     pm.addPass(mlir::createReconcileUnrealizedCastsPass());
     pm.addPass(mlir::createCanonicalizerPass());

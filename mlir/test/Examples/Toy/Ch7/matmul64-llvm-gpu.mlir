@@ -21,5 +21,6 @@ module {
 // CHECK: call void @mgpuStreamSynchronize
 // CHECK: call void @mgpuStreamDestroy
 // CHECK: call void @mgpuModuleUnload
+// CHECK-NOT: unrealized_conversion_cast
 // CHECK-NOT: gpu.launch_func
 // CHECK-NOT: gpu.binary

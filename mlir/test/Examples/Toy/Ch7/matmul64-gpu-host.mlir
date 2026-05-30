@@ -17,5 +17,7 @@ module {
 // CHECK:         #gpu.object<#nvvm.target
 // CHECK-NOT:     toy.print
 // CHECK-NOT:     toy.matmul
+// CHECK-NOT:     affine.
+// CHECK-NOT:     builtin.unrealized_conversion_cast
 // CHECK-NOT:     func.func
 // CHECK-NOT:     gpu.module
