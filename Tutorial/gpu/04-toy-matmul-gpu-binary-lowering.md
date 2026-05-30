@@ -65,16 +65,51 @@ binaryOptions.compilationTarget = "fatbin";
 新增 target 注册头文件：
 
 ```cpp
+#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
 ```
 
-并在 `DialectRegistry` 上注册 NVVM target external model：
+并在 `DialectRegistry` 上注册本阶段需要的 LLVM IR 翻译接口，以及 NVVM target external model：
 
 ```cpp
+mlir::registerBuiltinDialectTranslation(registry);
+mlir::registerGPUDialectTranslation(registry);
+mlir::registerLLVMDialectTranslation(registry);
+mlir::registerNVVMDialectTranslation(registry);
+mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
 mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
 ```
 
-这一步让 `#nvvm.target` 实现 `gpu::TargetAttrInterface`，也就是让 `gpu-module-to-binary` 知道如何把 NVVM target 的 `gpu.module` 序列化成 object。如果缺少这一步，`gpu-module-to-binary` 可能无法处理 `#nvvm.target`。
+这几行让 `gpu-module-to-binary` 内部调用 `translateModuleToLLVMIR` 时能翻译 `builtin` / `gpu` / `llvm` / `nvvm` 等 dialect。缺少 GPU translation 时会报：
+
+```text
+cannot be converted to LLVM IR: missing `LLVMTranslationDialectInterface`
+registration for dialect for op: gpu.module
+```
+
+其中：
+
+```text
+registerBuiltinDialectTranslation
+  让 module 等 builtin op 能进入 LLVM IR translation。
+
+registerGPUDialectTranslation
+  给 gpu.module / gpu.binary / gpu.launch_func 相关 offloading 结构提供翻译接口。
+
+registerLLVMDialectTranslation
+  翻译 llvm.func、llvm.load、llvm.store、llvm.br 等 LLVM dialect op。
+
+registerNVVMDialectTranslation
+  翻译 nvvm.read.ptx.sreg.tid.x、nvvm.kernel 等 NVVM dialect op。
+
+registerOffloadingLLVMTranslationInterfaceExternalModels
+  注册 GPU offloading object 的 LLVM translation external model。
+```
+
+`registerNVVMTargetInterfaceExternalModels` 让 `#nvvm.target` 实现 `gpu::TargetAttrInterface`，也就是让 `gpu-module-to-binary` 知道如何把 NVVM target 的 `gpu.module` 序列化成 object。
 
 ### 新增 emit action
 
@@ -218,15 +253,19 @@ gpu.launch_func
 第四阶段显式补了：
 
 ```cmake
+MLIRGPUToLLVMIRTranslation
 MLIRNVVMTarget
+MLIRNVVMToLLVMIRTranslation
 MLIRTargetLLVM
 ```
 
 原因：
 
 ```text
-MLIRNVVMTarget  提供 NVVM target serialization 能力。
-MLIRTargetLLVM  支撑 LLVM/offloading object 生成。
+MLIRGPUToLLVMIRTranslation   提供 GPU dialect 到 LLVM IR 的翻译接口。
+MLIRNVVMTarget               提供 NVVM target serialization 能力。
+MLIRNVVMToLLVMIRTranslation  提供 NVVM dialect 到 LLVM IR 的翻译接口。
+MLIRTargetLLVM               支撑 LLVM/offloading object 生成。
 ```
 
 之前已有：

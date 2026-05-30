@@ -54,6 +54,7 @@ target_link_libraries(toyc-ch7
     MLIRExecutionEngine
     MLIRFuncToLLVM
     MLIRFunctionInterfaces
+    MLIRGPUToLLVMIRTranslation
     MLIRGPUToNVVMTransforms
     MLIRGPUTransforms
     MLIRIR
@@ -63,6 +64,7 @@ target_link_libraries(toyc-ch7
     MLIRMemRefToLLVM
     MLIRNVVMTarget
     MLIRNVVMToLLVM
+    MLIRNVVMToLLVMIRTranslation
     MLIRParser
     MLIRPass
     MLIRSCFToControlFlow
