@@ -277,24 +277,35 @@ struct MatMulOpLowering : public ConversionPattern {
 
     auto lhsType = llvm::cast<MemRefType>(operands[0].getType());
     auto rhsType = llvm::cast<MemRefType>(operands[1].getType());
+    Type asyncTokenType = gpu::AsyncTokenType::get(rewriter.getContext());
+    Value token =
+        rewriter.create<gpu::WaitOp>(loc, asyncTokenType, ValueRange{})
+            .getAsyncToken();
 
     auto lhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
-        loc, lhsType, Type(), ValueRange{}, ValueRange{}, ValueRange{},
-        UnitAttr());
+        loc, lhsType, asyncTokenType, ValueRange{token}, ValueRange{},
+        ValueRange{}, false);
+    token = lhsDeviceAlloc.getAsyncToken();
     auto rhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
-        loc, rhsType, Type(), ValueRange{}, ValueRange{}, ValueRange{},
-        UnitAttr());
+        loc, rhsType, asyncTokenType, ValueRange{token}, ValueRange{},
+        ValueRange{}, false);
+    token = rhsDeviceAlloc.getAsyncToken();
     auto outDeviceAlloc = rewriter.create<gpu::AllocOp>(
-        loc, memRefType, Type(), ValueRange{}, ValueRange{}, ValueRange{},
-        UnitAttr());
+        loc, memRefType, asyncTokenType, ValueRange{token}, ValueRange{},
+        ValueRange{}, false);
+    token = outDeviceAlloc.getAsyncToken();
     Value lhsDevice = lhsDeviceAlloc.getMemref();
     Value rhsDevice = rhsDeviceAlloc.getMemref();
     Value outDevice = outDeviceAlloc.getMemref();
 
-    rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, lhsDevice,
-                                   operands[0]);
-    rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, rhsDevice,
-                                   operands[1]);
+    token = rewriter
+                .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                       lhsDevice, operands[0])
+                .getAsyncToken();
+    token = rewriter
+                .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                       rhsDevice, operands[1])
+                .getAsyncToken();
 
     int64_t m = lhsType.getShape()[0];
     int64_t k = lhsType.getShape()[1];
@@ -315,8 +326,10 @@ struct MatMulOpLowering : public ConversionPattern {
     Value zero = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getF64FloatAttr(0.0));
 
-    auto launch = rewriter.create<gpu::LaunchOp>(loc, gridX, gridY, c1, blockX,
-                                                 blockY, c1);
+    auto launch = rewriter.create<gpu::LaunchOp>(
+        loc, gridX, gridY, c1, blockX, blockY, c1,
+        /*dynamicSharedMemorySize=*/Value(), asyncTokenType, ValueRange{token});
+    token = launch.getAsyncToken();
     gpu::KernelDim3 blockIds = launch.getBlockIds();
     gpu::KernelDim3 threadIds = launch.getThreadIds();
 
@@ -358,11 +371,23 @@ struct MatMulOpLowering : public ConversionPattern {
     rewriter.create<gpu::TerminatorOp>(loc);
 
     rewriter.setInsertionPointAfter(launch);
-    rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, alloc,
-                                   outDevice);
-    rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, lhsDevice);
-    rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, rhsDevice);
-    rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, outDevice);
+    token = rewriter
+                .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                       alloc, outDevice)
+                .getAsyncToken();
+    token = rewriter
+                .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                        lhsDevice)
+                .getAsyncToken();
+    token = rewriter
+                .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                        rhsDevice)
+                .getAsyncToken();
+    token = rewriter
+                .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                        outDevice)
+                .getAsyncToken();
+    rewriter.create<gpu::WaitOp>(loc, Type(), ValueRange{token});
 
     rewriter.replaceOp(op, alloc);
     return success();

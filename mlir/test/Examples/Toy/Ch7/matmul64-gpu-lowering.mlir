@@ -18,12 +18,13 @@ module {
 // CHECK-DAG:     [[C64:%.*]] = arith.constant 64 : index
 // CHECK-DAG:     [[ZERO:%.*]] = arith.constant 0.000000e+00 : f64
 // CHECK:         [[OUT:%.*]] = memref.alloc() : memref<64x64xf64>
-// CHECK:         [[LHS_DEV:%.*]] = gpu.alloc () : memref<64x64xf64>
-// CHECK:         [[RHS_DEV:%.*]] = gpu.alloc () : memref<64x64xf64>
-// CHECK:         [[OUT_DEV:%.*]] = gpu.alloc () : memref<64x64xf64>
-// CHECK:         gpu.memcpy [[LHS_DEV]]
-// CHECK:         gpu.memcpy [[RHS_DEV]]
-// CHECK:         gpu.launch
+// CHECK:         [[T0:%.*]] = gpu.wait async
+// CHECK:         [[LHS_DEV:%.*]], [[T1:%.*]] = gpu.alloc async {{.*}} : memref<64x64xf64>
+// CHECK:         [[RHS_DEV:%.*]], [[T2:%.*]] = gpu.alloc async {{.*}} : memref<64x64xf64>
+// CHECK:         [[OUT_DEV:%.*]], [[T3:%.*]] = gpu.alloc async {{.*}} : memref<64x64xf64>
+// CHECK:         [[T4:%.*]] = gpu.memcpy async {{.*}} [[LHS_DEV]]
+// CHECK:         [[T5:%.*]] = gpu.memcpy async {{.*}} [[RHS_DEV]]
+// CHECK:         [[T6:%.*]] = gpu.launch async
 // CHECK-SAME:      blocks({{.*}}) in ({{.*}} = [[C4]], {{.*}} = [[C4]], {{.*}} = [[C1]])
 // CHECK-SAME:      threads({{.*}}) in ({{.*}} = [[C16]], {{.*}} = [[C16]], {{.*}} = [[C1]])
 // CHECK:           [[IN_M:%.*]] = arith.cmpi ult, {{.*}}, [[C64]] : index
@@ -40,9 +41,11 @@ module {
 // CHECK:             memref.store [[SUM]], [[OUT_DEV]]
 // CHECK:           }
 // CHECK:           gpu.terminator
-// CHECK:         gpu.memcpy [[OUT]], [[OUT_DEV]]
-// CHECK:         gpu.dealloc [[LHS_DEV]]
-// CHECK:         gpu.dealloc [[RHS_DEV]]
-// CHECK:         gpu.dealloc [[OUT_DEV]]
+// CHECK:         [[T7:%.*]] = gpu.memcpy async {{.*}} [[OUT]], [[OUT_DEV]]
+// CHECK:         [[T8:%.*]] = gpu.dealloc async {{.*}} [[LHS_DEV]]
+// CHECK:         [[T9:%.*]] = gpu.dealloc async {{.*}} [[RHS_DEV]]
+// CHECK:         [[T10:%.*]] = gpu.dealloc async {{.*}} [[OUT_DEV]]
+// CHECK:         gpu.wait
+// CHECK-SAME:    [[T10]]
 // CHECK:         toy.print [[OUT]] : memref<64x64xf64>
 // CHECK-NOT:     toy.matmul

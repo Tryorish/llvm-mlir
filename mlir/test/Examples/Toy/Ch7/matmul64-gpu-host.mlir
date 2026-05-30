@@ -11,10 +11,13 @@ module {
 }
 
 // CHECK-LABEL: llvm.func @main()
+// CHECK:         llvm.call @mgpuStreamCreate
 // CHECK:         llvm.call @mgpuMemAlloc
 // CHECK:         llvm.call @mgpuMemcpy
 // CHECK:         gpu.launch_func
 // CHECK:         llvm.call @mgpuMemFree
+// CHECK:         llvm.call @mgpuStreamSynchronize
+// CHECK:         llvm.call @mgpuStreamDestroy
 // CHECK:         llvm.call @printf
 // CHECK:       gpu.binary
 // CHECK:         #gpu.object<#nvvm.target
@@ -22,5 +25,8 @@ module {
 // CHECK-NOT:     toy.matmul
 // CHECK-NOT:     affine.
 // CHECK-NOT:     builtin.unrealized_conversion_cast
+// CHECK-NOT:     gpu.alloc
+// CHECK-NOT:     gpu.memcpy
+// CHECK-NOT:     gpu.dealloc
 // CHECK-NOT:     func.func
 // CHECK-NOT:     gpu.module

@@ -19,23 +19,25 @@ device output -> host output
 所以第六阶段在 `toy.matmul` lowering 中插入：
 
 ```mlir
-%lhs_dev = gpu.alloc () : memref<MxKxf64>
-%rhs_dev = gpu.alloc () : memref<KxNxf64>
-%out_dev = gpu.alloc () : memref<MxNxf64>
+%t0 = gpu.wait async
+%lhs_dev, %t1 = gpu.alloc async [%t0] () : memref<MxKxf64>
+%rhs_dev, %t2 = gpu.alloc async [%t1] () : memref<KxNxf64>
+%out_dev, %t3 = gpu.alloc async [%t2] () : memref<MxNxf64>
 
-gpu.memcpy %lhs_dev, %lhs : memref<MxKxf64>, memref<MxKxf64>
-gpu.memcpy %rhs_dev, %rhs : memref<KxNxf64>, memref<KxNxf64>
+%t4 = gpu.memcpy async [%t3] %lhs_dev, %lhs : memref<MxKxf64>, memref<MxKxf64>
+%t5 = gpu.memcpy async [%t4] %rhs_dev, %rhs : memref<KxNxf64>, memref<KxNxf64>
 
-gpu.launch ... {
+%t6 = gpu.launch async [%t5] ... {
   memref.load %lhs_dev[...]
   memref.load %rhs_dev[...]
   memref.store ... %out_dev[...]
 }
 
-gpu.memcpy %host_out, %out_dev : memref<MxNxf64>, memref<MxNxf64>
-gpu.dealloc %lhs_dev : memref<MxKxf64>
-gpu.dealloc %rhs_dev : memref<KxNxf64>
-gpu.dealloc %out_dev : memref<MxNxf64>
+%t7 = gpu.memcpy async [%t6] %host_out, %out_dev : memref<MxNxf64>, memref<MxNxf64>
+%t8 = gpu.dealloc async [%t7] %lhs_dev : memref<MxKxf64>
+%t9 = gpu.dealloc async [%t8] %rhs_dev : memref<KxNxf64>
+%t10 = gpu.dealloc async [%t9] %out_dev : memref<MxNxf64>
+gpu.wait [%t10]
 ```
 
 ## LowerToGPU.cpp 的改动
@@ -49,13 +51,23 @@ auto alloc = insertAllocAndDealloc(memRefType, loc, rewriter);
 现在额外创建 device buffer：
 
 ```cpp
+Type asyncTokenType = gpu::AsyncTokenType::get(rewriter.getContext());
+Value token =
+    rewriter.create<gpu::WaitOp>(loc, asyncTokenType, ValueRange{})
+        .getAsyncToken();
+
 auto lhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
-    loc, lhsType, Type(), ValueRange{}, ValueRange{}, ValueRange{}, UnitAttr());
+    loc, lhsType, asyncTokenType, ValueRange{token}, ValueRange{},
+    ValueRange{}, false);
+token = lhsDeviceAlloc.getAsyncToken();
 auto rhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
-    loc, rhsType, Type(), ValueRange{}, ValueRange{}, ValueRange{}, UnitAttr());
+    loc, rhsType, asyncTokenType, ValueRange{token}, ValueRange{},
+    ValueRange{}, false);
+token = rhsDeviceAlloc.getAsyncToken();
 auto outDeviceAlloc = rewriter.create<gpu::AllocOp>(
-    loc, memRefType, Type(), ValueRange{}, ValueRange{}, ValueRange{},
-    UnitAttr());
+    loc, memRefType, asyncTokenType, ValueRange{token}, ValueRange{},
+    ValueRange{}, false);
+token = outDeviceAlloc.getAsyncToken();
 ```
 
 取出 memref result：
@@ -69,10 +81,14 @@ Value outDevice = outDeviceAlloc.getMemref();
 然后在 launch 前拷贝输入：
 
 ```cpp
-rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, lhsDevice,
-                               operands[0]);
-rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, rhsDevice,
-                               operands[1]);
+token = rewriter
+            .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                   lhsDevice, operands[0])
+            .getAsyncToken();
+token = rewriter
+            .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                   rhsDevice, operands[1])
+            .getAsyncToken();
 ```
 
 kernel 内部改成读写 device buffer：
@@ -88,10 +104,23 @@ launch 后拷回 host 输出并释放 device buffer：
 
 ```cpp
 rewriter.setInsertionPointAfter(launch);
-rewriter.create<gpu::MemcpyOp>(loc, Type(), ValueRange{}, alloc, outDevice);
-rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, lhsDevice);
-rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, rhsDevice);
-rewriter.create<gpu::DeallocOp>(loc, Type(), ValueRange{}, outDevice);
+token = rewriter
+            .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                   alloc, outDevice)
+            .getAsyncToken();
+token = rewriter
+            .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                    lhsDevice)
+            .getAsyncToken();
+token = rewriter
+            .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                    rhsDevice)
+            .getAsyncToken();
+token = rewriter
+            .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                    outDevice)
+            .getAsyncToken();
+rewriter.create<gpu::WaitOp>(loc, Type(), ValueRange{token});
 ```
 
 最后仍然：
@@ -122,6 +151,21 @@ gpu.memcpy  -> mgpuMemcpy
 gpu.dealloc -> mgpuMemFree
 ```
 
+这里必须使用 async 形式。当前 MLIR 的 `gpu-to-llvm` runtime lowering 对
+`gpu.alloc`、`gpu.memcpy`、`gpu.dealloc` 的要求是：
+
+```text
+1. op 有 async result token。
+2. op 恰好有一个 async dependency。
+```
+
+否则这些 op 会留在 `-emit=mlir-gpu-host` 输出里，并产生无法消掉的
+`builtin.unrealized_conversion_cast`，最终 `-emit=llvm-gpu` 会报：
+
+```text
+LLVM Translation failed for operation: builtin.unrealized_conversion_cast
+```
+
 所以 `-emit=llvm-gpu` 应该能看到：
 
 ```llvm
@@ -137,7 +181,7 @@ call void @mgpuMemFree(...)
 这一阶段仍然是教学版：
 
 ```text
-1. 使用同步 gpu.memcpy / gpu.alloc / gpu.dealloc，没有显式 async token 链。
+1. 使用一条串行 async token 链，没有把输入拷贝并行化。
 2. 没有做错误检查。
 3. 没有做 tiling/shared memory 优化。
 4. kernel 仍是 naive one-thread-one-output。
@@ -163,10 +207,12 @@ ninja -C build toyc-ch7
 应能看到：
 
 ```text
-gpu.alloc
-gpu.memcpy
-gpu.launch
-gpu.dealloc
+gpu.wait async
+gpu.alloc async
+gpu.memcpy async
+gpu.launch async
+gpu.dealloc async
+gpu.wait
 ```
 
 看 host runtime lowering 后的 MLIR：
