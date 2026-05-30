@@ -43,6 +43,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -191,7 +192,35 @@ struct ToyToLLVMLoweringPass
   }
   void runOnOperation() final;
 };
+
+struct ToyPrintToLLVMLoweringPass
+    : public PassWrapper<ToyPrintToLLVMLoweringPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ToyPrintToLLVMLoweringPass)
+  StringRef getArgument() const override { return "toy-print-to-llvm"; }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<arith::ArithDialect, gpu::GPUDialect, LLVM::LLVMDialect,
+                    memref::MemRefDialect, scf::SCFDialect>();
+  }
+  void runOnOperation() final;
+};
 } // namespace
+
+void ToyPrintToLLVMLoweringPass::runOnOperation() {
+  ConversionTarget target(getContext());
+  target.addLegalDialect<arith::ArithDialect, gpu::GPUDialect,
+                         LLVM::LLVMDialect,
+                         memref::MemRefDialect, scf::SCFDialect>();
+  target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
+  target.addIllegalOp<toy::PrintOp>();
+
+  RewritePatternSet patterns(&getContext());
+  patterns.add<PrintOpLowering>(&getContext());
+
+  if (failed(applyPartialConversion(getOperation(), target,
+                                    std::move(patterns))))
+    signalPassFailure();
+}
 
 void ToyToLLVMLoweringPass::runOnOperation() {
   // The first thing to define is the conversion target. This will define the
@@ -239,4 +268,8 @@ void ToyToLLVMLoweringPass::runOnOperation() {
 /// well as `Affine` and `Std`, to the LLVM dialect for codegen.
 std::unique_ptr<mlir::Pass> mlir::toy::createLowerToLLVMPass() {
   return std::make_unique<ToyToLLVMLoweringPass>();
+}
+
+std::unique_ptr<mlir::Pass> mlir::toy::createLowerPrintToLLVMPass() {
+  return std::make_unique<ToyPrintToLLVMLoweringPass>();
 }

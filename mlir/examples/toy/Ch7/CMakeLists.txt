@@ -55,6 +55,7 @@ target_link_libraries(toyc-ch7
     MLIRFuncToLLVM
     MLIRFunctionInterfaces
     MLIRGPUToLLVMIRTranslation
+    MLIRGPUToGPURuntimeTransforms
     MLIRGPUToNVVMTransforms
     MLIRGPUTransforms
     MLIRIR
@@ -67,6 +68,7 @@ target_link_libraries(toyc-ch7
     MLIRNVVMToLLVMIRTranslation
     MLIRParser
     MLIRPass
+    MLIRReconcileUnrealizedCasts
     MLIRSCFToControlFlow
     MLIRSideEffectInterfaces
     MLIRTargetLLVM

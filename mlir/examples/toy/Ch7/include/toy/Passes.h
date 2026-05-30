@@ -33,6 +33,9 @@ std::unique_ptr<mlir::Pass> createLowerToGPUPass();
 /// well as `Affine` and `Std`, to the LLVM dialect for codegen.
 std::unique_ptr<mlir::Pass> createLowerToLLVMPass();
 
+/// Create a pass for lowering only `toy.print` to loops and LLVM `printf`.
+std::unique_ptr<mlir::Pass> createLowerPrintToLLVMPass();
+
 } // namespace toy
 } // namespace mlir
 
