@@ -54,6 +54,7 @@
 #include "mlir/Transforms/Passes.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/CommandLine.h"
@@ -99,7 +100,8 @@ enum Action {
   DumpLLVMGPU,
   DumpMLIRLLVM,
   DumpLLVMIR,
-  RunJIT
+  RunJIT,
+  RunGPUJIT
 };
 } // namespace
 static cl::opt<enum Action> emitAction(
@@ -125,9 +127,22 @@ static cl::opt<enum Action> emitAction(
     cl::values(clEnumValN(DumpLLVMIR, "llvm", "output the LLVM IR dump")),
     cl::values(
         clEnumValN(RunJIT, "jit",
-                   "JIT the code and run it by invoking the main function")));
+                   "JIT the code and run it by invoking the main function")),
+    cl::values(clEnumValN(
+        RunGPUJIT, "gpu-jit",
+        "JIT the GPU-lowered code and run it by invoking the main function")));
 
 static cl::opt<bool> enableOpt("opt", cl::desc("Enable optimizations"));
+
+static cl::opt<std::string>
+    gpuBinaryFormat("gpu-binary-format", cl::init("llvm"),
+                    cl::desc("GPU binary format for -emit=mlir-gpu-binary, "
+                             "-emit=mlir-gpu-host, and -emit=llvm-gpu "
+                             "(llvm, isa, bin, or fatbin)."));
+
+static cl::list<std::string>
+    jitSharedLibs("shared-libs", cl::ZeroOrMore, cl::CommaSeparated,
+                  cl::desc("Shared libraries to load when JIT-running."));
 
 /// Returns a Toy AST resulting from parsing the file or a nullptr on error.
 std::unique_ptr<toy::ModuleAST> parseInputFile(llvm::StringRef filename) {
@@ -190,24 +205,33 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
                          emitAction == Action::DumpMLIRGPUNVVM ||
                          emitAction == Action::DumpMLIRGPUBinary ||
                          emitAction == Action::DumpMLIRGPUHost ||
-                         emitAction == Action::DumpLLVMGPU;
+                         emitAction == Action::DumpLLVMGPU ||
+                         emitAction == Action::RunGPUJIT;
   bool isOutliningGPU = emitAction == Action::DumpMLIRGPUOutlined ||
                         emitAction == Action::DumpMLIRGPUNVVM ||
                         emitAction == Action::DumpMLIRGPUBinary ||
                         emitAction == Action::DumpMLIRGPUHost ||
-                        emitAction == Action::DumpLLVMGPU;
+                        emitAction == Action::DumpLLVMGPU ||
+                        emitAction == Action::RunGPUJIT;
   bool isLoweringGPUToNVVM = emitAction == Action::DumpMLIRGPUNVVM ||
                              emitAction == Action::DumpMLIRGPUBinary ||
                              emitAction == Action::DumpMLIRGPUHost ||
-                             emitAction == Action::DumpLLVMGPU;
+                             emitAction == Action::DumpLLVMGPU ||
+                             emitAction == Action::RunGPUJIT;
   bool isLoweringGPUToBinary = emitAction == Action::DumpMLIRGPUBinary ||
                                emitAction == Action::DumpMLIRGPUHost ||
-                               emitAction == Action::DumpLLVMGPU;
+                               emitAction == Action::DumpLLVMGPU ||
+                               emitAction == Action::RunGPUJIT;
   bool isLoweringGPUHost = emitAction == Action::DumpMLIRGPUHost ||
-                           emitAction == Action::DumpLLVMGPU;
+                           emitAction == Action::DumpLLVMGPU ||
+                           emitAction == Action::RunGPUJIT;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
-                            emitAction >= Action::DumpMLIRLLVM;
-  bool isLoweringToLLVM = emitAction >= Action::DumpMLIRLLVM;
+                            emitAction == Action::DumpMLIRLLVM ||
+                            emitAction == Action::DumpLLVMIR ||
+                            emitAction == Action::RunJIT;
+  bool isLoweringToLLVM = emitAction == Action::DumpMLIRLLVM ||
+                          emitAction == Action::DumpLLVMIR ||
+                          emitAction == Action::RunJIT;
 
   if (enableOpt || isLoweringToAffine || isLoweringToGPU) {
     // Inline all functions into main and then delete them.
@@ -275,7 +299,10 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     pm.addPass(mlir::createGpuNVVMAttachTarget(nvvmTargetOptions));
 
     mlir::GpuModuleToBinaryPassOptions binaryOptions;
-    binaryOptions.compilationTarget = "llvm";
+    binaryOptions.compilationTarget =
+        emitAction == Action::RunGPUJIT && !gpuBinaryFormat.getNumOccurrences()
+            ? "fatbin"
+            : gpuBinaryFormat;
     pm.addPass(mlir::createGpuModuleToBinaryPass(binaryOptions));
     pm.addPass(mlir::createCanonicalizerPass());
     pm.addPass(mlir::createCSEPass());
@@ -368,7 +395,7 @@ int dumpLLVMIR(mlir::ModuleOp module) {
   return 0;
 }
 
-int runJit(mlir::ModuleOp module) {
+int runJit(mlir::ModuleOp module, bool isGpuJit = false) {
   // Initialize LLVM targets.
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
@@ -376,7 +403,11 @@ int runJit(mlir::ModuleOp module) {
   // Register the translation from MLIR to LLVM IR, which must happen before we
   // can JIT-compile.
   mlir::registerBuiltinDialectTranslation(*module->getContext());
+  if (isGpuJit)
+    mlir::registerGPUDialectTranslation(*module->getContext());
   mlir::registerLLVMDialectTranslation(*module->getContext());
+  if (isGpuJit)
+    mlir::registerNVVMDialectTranslation(*module->getContext());
 
   // An optimization pipeline to use within the execution engine.
   auto optPipeline = mlir::makeOptimizingTransformer(
@@ -387,14 +418,23 @@ int runJit(mlir::ModuleOp module) {
   // the module.
   mlir::ExecutionEngineOptions engineOptions;
   engineOptions.transformer = optPipeline;
+  llvm::SmallVector<llvm::StringRef, 4> sharedLibRefs;
+  for (const std::string &lib : jitSharedLibs)
+    sharedLibRefs.push_back(lib);
+  engineOptions.sharedLibPaths = sharedLibRefs;
   auto maybeEngine = mlir::ExecutionEngine::create(module, engineOptions);
-  assert(maybeEngine && "failed to construct an execution engine");
+  if (!maybeEngine) {
+    llvm::errs() << "Failed to construct an execution engine\n";
+    llvm::logAllUnhandledErrors(maybeEngine.takeError(), llvm::errs());
+    return -1;
+  }
   auto &engine = maybeEngine.get();
 
   // Invoke the JIT-compiled function.
   auto invocationResult = engine->invokePacked("main");
   if (invocationResult) {
     llvm::errs() << "JIT invocation failed\n";
+    llvm::logAllUnhandledErrors(std::move(invocationResult), llvm::errs());
     return -1;
   }
 
@@ -463,6 +503,8 @@ int main(int argc, char **argv) {
   // Otherwise, we must be running the jit.
   if (emitAction == Action::RunJIT)
     return runJit(*module);
+  if (emitAction == Action::RunGPUJIT)
+    return runJit(*module, /*isGpuJit=*/true);
 
   llvm::errs() << "No action specified (parsing only?), use -emit=<action>\n";
   return -1;
