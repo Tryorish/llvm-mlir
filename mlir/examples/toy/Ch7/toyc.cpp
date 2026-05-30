@@ -301,8 +301,8 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     mlir::GpuModuleToBinaryPassOptions binaryOptions;
     binaryOptions.compilationTarget =
         emitAction == Action::RunGPUJIT && !gpuBinaryFormat.getNumOccurrences()
-            ? "fatbin"
-            : gpuBinaryFormat;
+            ? std::string("fatbin")
+            : gpuBinaryFormat.getValue();
     pm.addPass(mlir::createGpuModuleToBinaryPass(binaryOptions));
     pm.addPass(mlir::createCanonicalizerPass());
     pm.addPass(mlir::createCSEPass());
