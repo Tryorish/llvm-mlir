@@ -538,11 +538,11 @@ static void printAttributions(OpAsmPrinter &p, StringRef keyword,
   if (values.empty())
     return;
 
-  auto printBlockArg = [](BlockArgument v) {
-    return llvm::formatv("{} : {}", v, v.getType());
-  };
-  p << ' ' << keyword << '('
-    << llvm::interleaved(llvm::map_range(values, printBlockArg)) << ')';
+  p << ' ' << keyword << '(';
+  llvm::interleaveComma(values, p, [&p](BlockArgument value) {
+    p << value << " : " << value.getType();
+  });
+  p << ')';
 }
 
 /// Verifies a GPU function memory attribution.
