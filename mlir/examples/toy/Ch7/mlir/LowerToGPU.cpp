@@ -330,6 +330,15 @@ struct MatMulOpLowering : public ConversionPattern {
         loc, gridX, gridY, c1, blockX, blockY, c1,
         /*dynamicSharedMemorySize=*/Value(), asyncTokenType, ValueRange{token});
     token = launch.getAsyncToken();
+    auto workgroupAddrSpace =
+        gpu::AddressSpaceAttr::get(rewriter.getContext(),
+                                   gpu::AddressSpace::Workgroup);
+    auto tileType = MemRefType::get({blockSize, blockSize},
+                                    memRefType.getElementType(),
+                                    MemRefLayoutAttrInterface{},
+                                    Attribute(workgroupAddrSpace));
+    Value lhsTile = launch.addWorkgroupAttribution(tileType, loc);
+    Value rhsTile = launch.addWorkgroupAttribution(tileType, loc);
     gpu::KernelDim3 blockIds = launch.getBlockIds();
     gpu::KernelDim3 threadIds = launch.getThreadIds();
 
@@ -345,27 +354,77 @@ struct MatMulOpLowering : public ConversionPattern {
         rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, j, nVal);
     Value inBounds = rewriter.create<arith::AndIOp>(loc, inM, inN);
 
-    auto ifOp = rewriter.create<scf::IfOp>(loc, inBounds,
-                                           /*withElseRegion=*/false);
-    rewriter.setInsertionPointToStart(ifOp.thenBlock());
-
-    auto forK = rewriter.create<scf::ForOp>(
-        loc, c0, kVal, c1, ValueRange{zero},
+    auto forKTile = rewriter.create<scf::ForOp>(
+        loc, c0, kVal, blockX, ValueRange{zero},
         [&](OpBuilder &nestedBuilder, Location loc, Value ivK,
             ValueRange iterArgs) {
           Value acc = iterArgs[0];
-          Value lhs =
-              nestedBuilder.create<memref::LoadOp>(loc, lhsDevice,
-                                                   ValueRange{i, ivK});
-          Value rhs =
-              nestedBuilder.create<memref::LoadOp>(loc, rhsDevice,
-                                                   ValueRange{ivK, j});
-          Value prod = nestedBuilder.create<arith::MulFOp>(loc, lhs, rhs);
-          Value sum = nestedBuilder.create<arith::AddFOp>(loc, acc, prod);
-          nestedBuilder.create<scf::YieldOp>(loc, sum);
+          Value lhsK =
+              nestedBuilder.create<arith::AddIOp>(loc, ivK, threadIds.x);
+          Value rhsK =
+              nestedBuilder.create<arith::AddIOp>(loc, ivK, threadIds.y);
+          Value lhsInK = nestedBuilder.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::ult, lhsK, kVal);
+          Value lhsInBounds =
+              nestedBuilder.create<arith::AndIOp>(loc, inM, lhsInK);
+          Value rhsInK = nestedBuilder.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::ult, rhsK, kVal);
+          Value rhsInBounds =
+              nestedBuilder.create<arith::AndIOp>(loc, rhsInK, inN);
+          auto lhsIf = nestedBuilder.create<scf::IfOp>(
+              loc, TypeRange{memRefType.getElementType()}, lhsInBounds,
+              /*withElseRegion=*/true);
+          OpBuilder lhsThenBuilder =
+              lhsIf.getThenBodyBuilder(nestedBuilder.getListener());
+          Value lhs = lhsThenBuilder.create<memref::LoadOp>(
+              loc, lhsDevice, ValueRange{i, lhsK});
+          lhsThenBuilder.create<scf::YieldOp>(loc, lhs);
+          OpBuilder lhsElseBuilder =
+              lhsIf.getElseBodyBuilder(nestedBuilder.getListener());
+          lhsElseBuilder.create<scf::YieldOp>(loc, zero);
+
+          auto rhsIf = nestedBuilder.create<scf::IfOp>(
+              loc, TypeRange{memRefType.getElementType()}, rhsInBounds,
+              /*withElseRegion=*/true);
+          OpBuilder rhsThenBuilder =
+              rhsIf.getThenBodyBuilder(nestedBuilder.getListener());
+          Value rhs = rhsThenBuilder.create<memref::LoadOp>(
+              loc, rhsDevice, ValueRange{rhsK, j});
+          rhsThenBuilder.create<scf::YieldOp>(loc, rhs);
+          OpBuilder rhsElseBuilder =
+              rhsIf.getElseBodyBuilder(nestedBuilder.getListener());
+          rhsElseBuilder.create<scf::YieldOp>(loc, zero);
+          nestedBuilder.create<memref::StoreOp>(
+              loc, lhsIf.getResult(0), lhsTile,
+              ValueRange{threadIds.y, threadIds.x});
+          nestedBuilder.create<memref::StoreOp>(
+              loc, rhsIf.getResult(0), rhsTile,
+              ValueRange{threadIds.y, threadIds.x});
+          nestedBuilder.create<gpu::BarrierOp>(loc);
+
+          auto forK = nestedBuilder.create<scf::ForOp>(
+              loc, c0, blockX, c1, ValueRange{acc},
+              [&](OpBuilder &innerBuilder, Location loc, Value ivInnerK,
+                  ValueRange innerIterArgs) {
+                Value innerAcc = innerIterArgs[0];
+                Value tiledLhs = innerBuilder.create<memref::LoadOp>(
+                    loc, lhsTile, ValueRange{threadIds.y, ivInnerK});
+                Value tiledRhs = innerBuilder.create<memref::LoadOp>(
+                    loc, rhsTile, ValueRange{ivInnerK, threadIds.x});
+                Value prod =
+                    innerBuilder.create<arith::MulFOp>(loc, tiledLhs, tiledRhs);
+                Value sum =
+                    innerBuilder.create<arith::AddFOp>(loc, innerAcc, prod);
+                innerBuilder.create<scf::YieldOp>(loc, sum);
+              });
+          nestedBuilder.create<gpu::BarrierOp>(loc);
+          nestedBuilder.create<scf::YieldOp>(loc, forK.getResult(0));
         });
 
-    rewriter.create<memref::StoreOp>(loc, forK.getResult(0), outDevice,
+    auto storeIf = rewriter.create<scf::IfOp>(loc, inBounds,
+                                              /*withElseRegion=*/false);
+    rewriter.setInsertionPointToStart(storeIf.thenBlock());
+    rewriter.create<memref::StoreOp>(loc, forKTile.getResult(0), outDevice,
                                      ValueRange{i, j});
     rewriter.setInsertionPointToEnd(&launch.getBody().front());
     rewriter.create<gpu::TerminatorOp>(loc);
