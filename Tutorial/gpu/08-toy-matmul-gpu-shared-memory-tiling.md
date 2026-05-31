@@ -84,7 +84,7 @@ if (row < M && col < N)
 
 ## LowerToGPU.cpp 的改动
 
-创建 `gpu.launch` 后，新增两个 workgroup attribution：
+创建 `gpu.launch` 时，直接传入两个 workgroup attribution 类型：
 
 ```cpp
 auto workgroupAddrSpace =
@@ -94,8 +94,14 @@ auto tileType = MemRefType::get({blockSize, blockSize},
                                 memRefType.getElementType(),
                                 MemRefLayoutAttrInterface{},
                                 Attribute(workgroupAddrSpace));
-Value lhsTile = launch.addWorkgroupAttribution(tileType, loc);
-Value rhsTile = launch.addWorkgroupAttribution(tileType, loc);
+SmallVector<Type, 2> tileTypes{tileType, tileType};
+auto launch = rewriter.create<gpu::LaunchOp>(
+    loc, gridX, gridY, c1, blockX, blockY, c1,
+    /*dynamicSharedMemorySize=*/Value(), asyncTokenType, ValueRange{token},
+    tileTypes);
+unsigned firstWorkgroupArg = launch.getNumConfigRegionAttributes();
+Value lhsTile = launch.getBody().getArgument(firstWorkgroupArg);
+Value rhsTile = launch.getBody().getArgument(firstWorkgroupArg + 1);
 ```
 
 原来的 K 循环是：

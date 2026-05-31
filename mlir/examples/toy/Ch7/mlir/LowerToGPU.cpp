@@ -326,10 +326,6 @@ struct MatMulOpLowering : public ConversionPattern {
     Value zero = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getF64FloatAttr(0.0));
 
-    auto launch = rewriter.create<gpu::LaunchOp>(
-        loc, gridX, gridY, c1, blockX, blockY, c1,
-        /*dynamicSharedMemorySize=*/Value(), asyncTokenType, ValueRange{token});
-    token = launch.getAsyncToken();
     auto workgroupAddrSpace =
         gpu::AddressSpaceAttr::get(rewriter.getContext(),
                                    gpu::AddressSpace::Workgroup);
@@ -337,8 +333,15 @@ struct MatMulOpLowering : public ConversionPattern {
                                     memRefType.getElementType(),
                                     MemRefLayoutAttrInterface{},
                                     Attribute(workgroupAddrSpace));
-    Value lhsTile = launch.addWorkgroupAttribution(tileType, loc);
-    Value rhsTile = launch.addWorkgroupAttribution(tileType, loc);
+    SmallVector<Type, 2> tileTypes{tileType, tileType};
+    auto launch = rewriter.create<gpu::LaunchOp>(
+        loc, gridX, gridY, c1, blockX, blockY, c1,
+        /*dynamicSharedMemorySize=*/Value(), asyncTokenType, ValueRange{token},
+        tileTypes);
+    token = launch.getAsyncToken();
+    unsigned firstWorkgroupArg = launch.getNumConfigRegionAttributes();
+    Value lhsTile = launch.getBody().getArgument(firstWorkgroupArg);
+    Value rhsTile = launch.getBody().getArgument(firstWorkgroupArg + 1);
     gpu::KernelDim3 blockIds = launch.getBlockIds();
     gpu::KernelDim3 threadIds = launch.getThreadIds();
 
