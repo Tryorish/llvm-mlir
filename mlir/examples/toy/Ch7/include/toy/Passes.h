@@ -40,6 +40,10 @@ std::unique_ptr<mlir::Pass> createMatMulReorderTiledLoopsPass();
 /// `gpu.launch`.
 std::unique_ptr<mlir::Pass> createMatMulMapToGPUPass();
 
+/// Create a pass for mapping reordered tiled matmul loops to a `gpu.launch`
+/// with workgroup-memory tile promotion.
+std::unique_ptr<mlir::Pass> createMatMulPromoteWorkgroupMemoryPass();
+
 /// Create a pass for lowering to operations in the `GPU` dialect,
 /// for a subset of the Toy IR (e.g. matmul).
 std::unique_ptr<mlir::Pass> createLowerToGPUPass();

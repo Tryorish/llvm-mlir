@@ -95,6 +95,7 @@ enum Action {
   DumpMLIRTiledMatMul,
   DumpMLIRReorderedTiledMatMul,
   DumpMLIRGPUNaiveMatMul,
+  DumpMLIRGPUWorkgroupMatMul,
   DumpMLIRAffine,
   DumpMLIRGPU,
   DumpMLIRGPUOutlined,
@@ -123,6 +124,9 @@ static cl::opt<enum Action> emitAction(
     cl::values(clEnumValN(
         DumpMLIRGPUNaiveMatMul, "mlir-gpu-naive-matmul",
         "output the MLIR dump after mapping reordered matmul loops to GPU")),
+    cl::values(clEnumValN(
+        DumpMLIRGPUWorkgroupMatMul, "mlir-gpu-workgroup-matmul",
+        "output the MLIR dump after promoting matmul tiles to workgroup memory")),
     cl::values(clEnumValN(DumpMLIRAffine, "mlir-affine",
                           "output the MLIR dump after affine lowering")),
     cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
@@ -244,14 +248,19 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
       emitAction == Action::DumpMLIRSCFMatMul ||
       emitAction == Action::DumpMLIRTiledMatMul ||
       emitAction == Action::DumpMLIRReorderedTiledMatMul ||
-      emitAction == Action::DumpMLIRGPUNaiveMatMul;
+      emitAction == Action::DumpMLIRGPUNaiveMatMul ||
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
   bool isTilingMatMul = emitAction == Action::DumpMLIRTiledMatMul ||
                         emitAction == Action::DumpMLIRReorderedTiledMatMul ||
-                        emitAction == Action::DumpMLIRGPUNaiveMatMul;
+                        emitAction == Action::DumpMLIRGPUNaiveMatMul ||
+                        emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
   bool isReorderingTiledMatMul =
       emitAction == Action::DumpMLIRReorderedTiledMatMul ||
-      emitAction == Action::DumpMLIRGPUNaiveMatMul;
+      emitAction == Action::DumpMLIRGPUNaiveMatMul ||
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
   bool isMappingMatMulToGPU = emitAction == Action::DumpMLIRGPUNaiveMatMul;
+  bool isPromotingMatMulWorkgroupMemory =
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction == Action::DumpMLIRLLVM ||
                             emitAction == Action::DumpLLVMIR ||
@@ -285,6 +294,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
     if (isMappingMatMulToGPU)
       pm.addPass(mlir::toy::createMatMulMapToGPUPass());
+
+    if (isPromotingMatMulWorkgroupMemory)
+      pm.addPass(mlir::toy::createMatMulPromoteWorkgroupMemoryPass());
 
     mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());
@@ -531,6 +543,7 @@ int main(int argc, char **argv) {
                          emitAction ==
                              Action::DumpMLIRReorderedTiledMatMul ||
                          emitAction == Action::DumpMLIRGPUNaiveMatMul ||
+                         emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
                          emitAction == Action::DumpMLIRGPUOutlined ||

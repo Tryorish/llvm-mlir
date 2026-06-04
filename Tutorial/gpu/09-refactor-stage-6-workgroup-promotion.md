@@ -2,13 +2,13 @@
 
 目标：把 global memory tile 显式提升到 workgroup/shared memory。
 
-## 建议新增 Pass
+## 已新增 Pass
 
 ```text
 toy-matmul-promote-workgroup-memory
 ```
 
-建议实现文件：
+实现文件：
 
 ```text
 mlir/examples/toy/Ch7/mlir/MatMulPromoteWorkgroupMemory.cpp
@@ -17,18 +17,42 @@ mlir/examples/toy/Ch7/toyc.cpp
 mlir/examples/toy/Ch7/CMakeLists.txt
 ```
 
+新增 emit action：
+
+```text
+-emit=mlir-gpu-workgroup-matmul
+```
+
+pipeline 形状：
+
+```text
+Toy/MLIR input
+  -> inliner
+  -> canonicalizer
+  -> toy shape inference
+  -> canonicalizer
+  -> CSE
+  -> toy-matmul-to-scf
+  -> toy-matmul-tile-loops
+  -> toy-matmul-reorder-tiled-loops
+  -> toy-matmul-promote-workgroup-memory
+  -> func-level canonicalizer
+  -> func-level CSE
+  -> dump MLIR
+```
+
 ## 输入
 
-阶段 5 的 naive GPU kernel：
+阶段 4 的 reordered tiled loop nest。当前实现直接从 reordered loop 生成 workgroup 版本的 `gpu.launch`，不先经过 Stage 5 的 naive launch。
 
 ```mlir
-gpu.launch {
-  for ko step 16
-    for ki step 1
-      load A[row, ko + ki]
-      load B[ko + ki, col]
-      accumulate
-}
+for io
+  for jo
+    for ii
+      for ji
+        for ko
+          for ki
+            accumulate
 ```
 
 ## 输出
@@ -52,14 +76,14 @@ gpu.launch workgroup(%tileA, %tileB) {
 ## 实施步骤
 
 ```text
-1. 在 gpu.launch 上新增两个 workgroup attribution。
+1. 已在 gpu.launch 上新增两个 workgroup attribution。
 2. tile 类型固定为 memref<16x16xf64, #gpu.address_space<workgroup>>。
-3. 用 threadIdx.x/threadIdx.y 协作加载 A/B tile。
-4. 对 A/B tile load 分别生成边界判断。
+3. 已用 threadIdx.x/threadIdx.y 协作加载 A/B tile。
+4. 已对 A/B tile load 分别生成边界判断。
 5. 越界线程写 0 到 tile。
-6. shared tile store 后插入 gpu.barrier。
-7. inner ki loop 改为读取 tileA/tileB。
-8. inner reduction 后再插入 gpu.barrier。
+6. shared tile store 后已插入 gpu.barrier。
+7. inner ki loop 已改为读取 tileA/tileB。
+8. inner reduction 后已再插入 gpu.barrier。
 ```
 
 ## 注意事项
@@ -85,9 +109,87 @@ tileA[threadIdx.y, ki]
 tileB[ki, threadIdx.x]
 ```
 
-建议新增测试：
+新增测试：
 
 ```text
 mlir/test/Examples/Toy/Ch7/matmul64-gpu-workgroup.mlir
 mlir/test/Examples/Toy/Ch7/matmul70-gpu-workgroup.mlir
+```
+
+## 当前实现范围
+
+`MatMulPromoteWorkgroupMemory.cpp` 是一个 loop-level rewrite pass：
+
+```text
+只匹配：
+  Stage 4 输出的 io/jo/ii/ji/ko/ki reordered tiled matmul loop nest。
+
+改写为：
+  gpu.launch blocks(gridX, gridY, 1) threads(16, 16, 1)
+    workgroup(tileA: memref<16x16xf64, #gpu.address_space<workgroup>>,
+              tileB: memref<16x16xf64, #gpu.address_space<workgroup>>)
+    for ko step 16:
+      guarded global load A[row, ko + threadIdx.x] or 0 -> tileA[threadIdx.y, threadIdx.x]
+      guarded global load B[ko + threadIdx.y, col] or 0 -> tileB[threadIdx.y, threadIdx.x]
+      gpu.barrier
+      for ki = 0 to 16:
+        acc += tileA[threadIdx.y, ki] * tileB[ki, threadIdx.x]
+      gpu.barrier
+    if row < M && col < N:
+      store C[row, col]
+```
+
+当前不处理：
+
+```text
+device memory allocation/copy
+gpu.module outlining
+NVVM lowering
+host runtime lowering
+```
+
+这些仍留给后续阶段或旧 `toy-to-gpu` 路径。
+
+## 验证状态
+
+已新增测试：
+
+```text
+mlir/test/Examples/Toy/Ch7/matmul64-gpu-workgroup.mlir
+mlir/test/Examples/Toy/Ch7/matmul70-gpu-workgroup.mlir
+```
+
+测试命令：
+
+```bash
+./build/bin/llvm-lit mlir/test/Examples/Toy/Ch7/matmul64-gpu-workgroup.mlir
+./build/bin/llvm-lit mlir/test/Examples/Toy/Ch7/matmul70-gpu-workgroup.mlir
+```
+
+或手动查看：
+
+```bash
+./build/bin/toyc-ch7 mlir/test/Examples/Toy/Ch7/matmul64-gpu-workgroup.mlir \
+  -emit=mlir-gpu-workgroup-matmul -x=mlir
+```
+
+当前执行状态：
+
+```text
+已完成：
+  - 新增 MatMulPromoteWorkgroupMemory.cpp。
+  - 新增 createMatMulPromoteWorkgroupMemoryPass() 声明。
+  - 新增 -emit=mlir-gpu-workgroup-matmul。
+  - CMake 已加入新源文件。
+  - 新增 matmul64-gpu-workgroup.mlir。
+  - 新增 matmul70-gpu-workgroup.mlir。
+
+未在本地执行：
+  - ninja -C build toyc-ch7
+  - toyc-ch7 -emit=mlir-gpu-workgroup-matmul
+  - llvm-lit matmul64-gpu-workgroup.mlir
+  - llvm-lit matmul70-gpu-workgroup.mlir
+
+未执行原因：
+  - 延续前置要求：本地不要编译。
 ```
