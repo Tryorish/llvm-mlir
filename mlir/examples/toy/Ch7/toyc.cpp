@@ -92,6 +92,7 @@ enum Action {
   DumpAST,
   DumpMLIR,
   DumpMLIRSCFMatMul,
+  DumpMLIRTiledMatMul,
   DumpMLIRAffine,
   DumpMLIRGPU,
   DumpMLIRGPUOutlined,
@@ -112,6 +113,8 @@ static cl::opt<enum Action> emitAction(
     cl::values(clEnumValN(
         DumpMLIRSCFMatMul, "mlir-scf-matmul",
         "output the MLIR dump after lowering toy.matmul to scf.for loops")),
+    cl::values(clEnumValN(DumpMLIRTiledMatMul, "mlir-tiled-matmul",
+                          "output the MLIR dump after tiling matmul loops")),
     cl::values(clEnumValN(DumpMLIRAffine, "mlir-affine",
                           "output the MLIR dump after affine lowering")),
     cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
@@ -229,7 +232,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   bool isLoweringGPUHost = emitAction == Action::DumpMLIRGPUHost ||
                            emitAction == Action::DumpLLVMGPU ||
                            emitAction == Action::RunGPUJIT;
-  bool isLoweringToSCFMatMul = emitAction == Action::DumpMLIRSCFMatMul;
+  bool isLoweringToSCFMatMul = emitAction == Action::DumpMLIRSCFMatMul ||
+                               emitAction == Action::DumpMLIRTiledMatMul;
+  bool isTilingMatMul = emitAction == Action::DumpMLIRTiledMatMul;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction == Action::DumpMLIRLLVM ||
                             emitAction == Action::DumpLLVMIR ||
@@ -254,6 +259,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
   if (isLoweringToSCFMatMul) {
     pm.addPass(mlir::toy::createMatMulToSCFPass());
+
+    if (isTilingMatMul)
+      pm.addPass(mlir::toy::createMatMulTileLoopsPass());
 
     mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());
@@ -496,6 +504,7 @@ int main(int argc, char **argv) {
   // If we aren't exporting to non-mlir, then we are done.
   bool isOutputingMLIR = emitAction == Action::DumpMLIR ||
                          emitAction == Action::DumpMLIRSCFMatMul ||
+                         emitAction == Action::DumpMLIRTiledMatMul ||
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
                          emitAction == Action::DumpMLIRGPUOutlined ||
