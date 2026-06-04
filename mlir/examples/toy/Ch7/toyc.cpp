@@ -560,6 +560,8 @@ int main(int argc, char **argv) {
                              Action::DumpMLIRReorderedTiledMatMul ||
                          emitAction == Action::DumpMLIRGPUNaiveMatMul ||
                          emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
+                         emitAction ==
+                             Action::DumpMLIRGPUDeviceMemoryMatMul ||
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
                          emitAction == Action::DumpMLIRGPUOutlined ||
