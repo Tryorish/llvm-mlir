@@ -94,6 +94,7 @@ enum Action {
   DumpMLIRSCFMatMul,
   DumpMLIRTiledMatMul,
   DumpMLIRReorderedTiledMatMul,
+  DumpMLIRGPUNaiveMatMul,
   DumpMLIRAffine,
   DumpMLIRGPU,
   DumpMLIRGPUOutlined,
@@ -119,6 +120,9 @@ static cl::opt<enum Action> emitAction(
     cl::values(clEnumValN(
         DumpMLIRReorderedTiledMatMul, "mlir-reordered-tiled-matmul",
         "output the MLIR dump after reordering tiled matmul loops")),
+    cl::values(clEnumValN(
+        DumpMLIRGPUNaiveMatMul, "mlir-gpu-naive-matmul",
+        "output the MLIR dump after mapping reordered matmul loops to GPU")),
     cl::values(clEnumValN(DumpMLIRAffine, "mlir-affine",
                           "output the MLIR dump after affine lowering")),
     cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
@@ -239,11 +243,15 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   bool isLoweringToSCFMatMul =
       emitAction == Action::DumpMLIRSCFMatMul ||
       emitAction == Action::DumpMLIRTiledMatMul ||
-      emitAction == Action::DumpMLIRReorderedTiledMatMul;
+      emitAction == Action::DumpMLIRReorderedTiledMatMul ||
+      emitAction == Action::DumpMLIRGPUNaiveMatMul;
   bool isTilingMatMul = emitAction == Action::DumpMLIRTiledMatMul ||
-                        emitAction == Action::DumpMLIRReorderedTiledMatMul;
+                        emitAction == Action::DumpMLIRReorderedTiledMatMul ||
+                        emitAction == Action::DumpMLIRGPUNaiveMatMul;
   bool isReorderingTiledMatMul =
-      emitAction == Action::DumpMLIRReorderedTiledMatMul;
+      emitAction == Action::DumpMLIRReorderedTiledMatMul ||
+      emitAction == Action::DumpMLIRGPUNaiveMatMul;
+  bool isMappingMatMulToGPU = emitAction == Action::DumpMLIRGPUNaiveMatMul;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction == Action::DumpMLIRLLVM ||
                             emitAction == Action::DumpLLVMIR ||
@@ -274,6 +282,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
     if (isReorderingTiledMatMul)
       pm.addPass(mlir::toy::createMatMulReorderTiledLoopsPass());
+
+    if (isMappingMatMulToGPU)
+      pm.addPass(mlir::toy::createMatMulMapToGPUPass());
 
     mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());
@@ -519,6 +530,7 @@ int main(int argc, char **argv) {
                          emitAction == Action::DumpMLIRTiledMatMul ||
                          emitAction ==
                              Action::DumpMLIRReorderedTiledMatMul ||
+                         emitAction == Action::DumpMLIRGPUNaiveMatMul ||
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
                          emitAction == Action::DumpMLIRGPUOutlined ||
