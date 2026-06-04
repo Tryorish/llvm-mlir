@@ -15,7 +15,7 @@ toy.matmul
   -> shared memory tiling
 ```
 
-当前实现主要集中在 `LowerToGPU.cpp` 的 `MatMulOpLowering` 里。它适合教学和快速验证，但把太多职责写在一个 rewrite pattern 中：
+重构前实现主要集中在 `LowerToGPU.cpp` 的 `MatMulOpLowering` 里。它适合教学和快速验证，但把太多职责写在一个 rewrite pattern 中：
 
 ```text
 识别 toy.matmul
@@ -28,7 +28,22 @@ toy.matmul
 维护 async token 依赖链
 ```
 
-后续重构目标是把这些职责拆开，让每个阶段的输入、输出和测试都更清楚。
+当前重构已经把 matmul GPU lowering 拆成 Stage 2-7，并且完整 GPU action
+已经统一复用这条 staged pipeline：
+
+```text
+toy-matmul-to-scf
+  -> toy-matmul-tile-loops
+  -> toy-matmul-reorder-tiled-loops
+  -> toy-matmul-map-to-gpu
+  -> toy-matmul-promote-workgroup-memory
+  -> toy-gpu-insert-device-memory
+  -> gpu outlining / NVVM / binary / host runtime / JIT
+```
+
+也就是说，`-emit=mlir-gpu`、`-emit=mlir-gpu-nvvm`、`-emit=mlir-gpu-host`、
+`-emit=llvm-gpu` 和 `-emit=gpu-jit` 现在不再走旧的 monolithic matmul
+lowering，而是先走分阶段 pipeline，再接 MLIR 标准 GPU 后端。
 
 ## 总体原则
 

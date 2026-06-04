@@ -248,32 +248,39 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   bool isLoweringGPUHost = emitAction == Action::DumpMLIRGPUHost ||
                            emitAction == Action::DumpLLVMGPU ||
                            emitAction == Action::RunGPUJIT;
+  bool isUsingStagedMatMulGPU = isLoweringToGPU;
   bool isLoweringToSCFMatMul =
       emitAction == Action::DumpMLIRSCFMatMul ||
       emitAction == Action::DumpMLIRTiledMatMul ||
       emitAction == Action::DumpMLIRReorderedTiledMatMul ||
       emitAction == Action::DumpMLIRGPUNaiveMatMul ||
       emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
-      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul ||
+      isUsingStagedMatMulGPU;
   bool isTilingMatMul = emitAction == Action::DumpMLIRTiledMatMul ||
                         emitAction == Action::DumpMLIRReorderedTiledMatMul ||
                         emitAction == Action::DumpMLIRGPUNaiveMatMul ||
                         emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
-                        emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
+                        emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul ||
+                        isUsingStagedMatMulGPU;
   bool isReorderingTiledMatMul =
       emitAction == Action::DumpMLIRReorderedTiledMatMul ||
       emitAction == Action::DumpMLIRGPUNaiveMatMul ||
       emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
-      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul ||
+      isUsingStagedMatMulGPU;
   bool isMappingMatMulToGPU =
       emitAction == Action::DumpMLIRGPUNaiveMatMul ||
       emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
-      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul ||
+      isUsingStagedMatMulGPU;
   bool isPromotingMatMulWorkgroupMemory =
       emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
-      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul ||
+      isUsingStagedMatMulGPU;
   bool isInsertingGPUDeviceMemory =
-      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul ||
+      isUsingStagedMatMulGPU;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction == Action::DumpMLIRLLVM ||
                             emitAction == Action::DumpLLVMIR ||
@@ -333,16 +340,6 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
       optPM.addPass(mlir::affine::createLoopFusionPass());
       optPM.addPass(mlir::affine::createAffineScalarReplacementPass());
     }
-  }
-
-  if (isLoweringToGPU) {
-    // Partially lower the toy dialect to GPU operations.
-    pm.addPass(mlir::toy::createLowerToGPUPass());
-
-    // Add a few cleanups post lowering.
-    mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
-    optPM.addPass(mlir::createCanonicalizerPass());
-    optPM.addPass(mlir::createCSEPass());
   }
 
   if (isOutliningGPU) {

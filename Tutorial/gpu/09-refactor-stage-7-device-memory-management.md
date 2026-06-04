@@ -48,7 +48,7 @@ mlir/examples/toy/Ch7/CMakeLists.txt
 pipeline 形状：
 
 ```text
-Toy/MLIR input
+Toy/MLIR input for -emit=mlir-gpu-device-memory-matmul
   -> inliner
   -> canonicalizer
   -> toy shape inference
@@ -63,6 +63,40 @@ Toy/MLIR input
   -> func-level canonicalizer
   -> func-level CSE
   -> dump MLIR
+```
+
+完整 GPU pipeline 也已统一复用 Stage 2-7：
+
+```text
+-emit=mlir-gpu
+-emit=mlir-gpu-outlined
+-emit=mlir-gpu-nvvm
+-emit=mlir-gpu-binary
+-emit=mlir-gpu-host
+-emit=llvm-gpu
+-emit=gpu-jit
+```
+
+这些 action 不再先走旧的 monolithic `createLowerToGPUPass()` matmul lowering，
+而是先经过：
+
+```text
+toy-matmul-to-scf
+  -> toy-matmul-tile-loops
+  -> toy-matmul-reorder-tiled-loops
+  -> toy-matmul-map-to-gpu
+  -> toy-matmul-promote-workgroup-memory
+  -> toy-gpu-insert-device-memory
+```
+
+之后再继续进入标准 GPU 后端阶段：
+
+```text
+gpu.launch outlining
+  -> GPU to NVVM
+  -> gpu.binary
+  -> GPU host runtime lowering
+  -> LLVM IR / JIT
 ```
 
 ## Pass A 输出
