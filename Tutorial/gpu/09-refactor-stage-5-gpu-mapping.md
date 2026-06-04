@@ -65,12 +65,18 @@ gpu.launch blocks(...) threads(...) {
 naive kernel 形状：
 
 ```text
-for k = 0..K
-  load A[row, k]
-  load B[k, col]
-  acc += ...
+for ko = 0..K step 16
+  for ki = 0..16 step 1
+    k = ko + ki
+    load A[row, k]
+    load B[k, col]
+    acc += ...
 store C[row, col]
 ```
+
+这里保留 `ko/ki` 的 tiled reduction 结构。Stage 5 只负责 GPU block/thread
+映射和 global-memory naive kernel，不做 K 维展平；这样 Stage 6 可以直接在
+`ko` tile 粒度插入 workgroup memory promotion 和 barrier。
 
 ## 实施步骤
 
@@ -81,7 +87,7 @@ store C[row, col]
 4. threads 固定为 16 x 16 x 1。
 5. 已在 launch body 中用 block/thread id 重建 row/col。
 6. 已保留 row < M 和 col < N 边界判断。
-7. 已生成 naive k reduction，直接读 global memory。
+7. 已生成保留 `ko/ki` 的 naive tiled K reduction，直接读 global memory。
 8. 已在 inBounds 内 store C。
 ```
 
@@ -112,6 +118,8 @@ row = blockIdx.y * 16 + threadIdx.y
 col = blockIdx.x * 16 + threadIdx.x
 global memref.load A[row, k]
 global memref.load B[k, col]
+ko step 16
+ki step 1
 ```
 
 不能出现：
@@ -140,8 +148,10 @@ mlir/test/Examples/Toy/Ch7/matmul64-gpu-naive.mlir
     row = blockIdx.y * 16 + threadIdx.y
     col = blockIdx.x * 16 + threadIdx.x
     if row < M && col < N:
-      for k = 0 to K step 1:
-        acc += A[row, k] * B[k, col]
+      for ko = 0 to K step 16:
+        for ki = 0 to 16 step 1:
+          k = ko + ki
+          acc += A[row, k] * B[k, col]
       store C[row, col]
 ```
 

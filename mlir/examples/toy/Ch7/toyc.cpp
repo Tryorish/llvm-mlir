@@ -258,7 +258,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
       emitAction == Action::DumpMLIRReorderedTiledMatMul ||
       emitAction == Action::DumpMLIRGPUNaiveMatMul ||
       emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
-  bool isMappingMatMulToGPU = emitAction == Action::DumpMLIRGPUNaiveMatMul;
+  bool isMappingMatMulToGPU =
+      emitAction == Action::DumpMLIRGPUNaiveMatMul ||
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
   bool isPromotingMatMulWorkgroupMemory =
       emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||

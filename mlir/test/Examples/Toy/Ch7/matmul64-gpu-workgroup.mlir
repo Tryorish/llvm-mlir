@@ -46,6 +46,7 @@ module {
 // CHECK:             gpu.barrier
 // CHECK:             scf.yield
 // CHECK:           }
+// CHECK:           scf.if
 // CHECK:           memref.store [[SUM]], [[OUT]][[[I]], [[J]]] : memref<64x64xf64>
 // CHECK:           gpu.terminator
 // CHECK:         toy.print [[OUT]] : memref<64x64xf64>

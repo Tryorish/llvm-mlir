@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the sixth Toy GPU refactor stage. It maps reordered
-// tiled matmul loops to gpu.launch and explicitly promotes the A/B tiles to
+// This file implements the sixth Toy GPU refactor stage. It consumes the naive
+// gpu.launch produced by stage 5 and explicitly promotes the A/B tiles to
 // workgroup memory. Device memory management and outlining are intentionally
 // left to later stages.
 //
@@ -57,26 +57,6 @@ static Operation *lastNonTerminator(Block *block) {
   return last;
 }
 
-static scf::ForOp getOnlyNestedFor(scf::ForOp parent) {
-  Operation *onlyOp = nullptr;
-  for (Operation &op : parent.getBody()->without_terminator()) {
-    if (onlyOp)
-      return nullptr;
-    onlyOp = &op;
-  }
-  if (!onlyOp)
-    return nullptr;
-  return dyn_cast<scf::ForOp>(onlyOp);
-}
-
-static scf::ForOp getLastNestedFor(scf::ForOp parent) {
-  return dyn_cast_or_null<scf::ForOp>(lastNonTerminator(parent.getBody()));
-}
-
-static scf::IfOp getLastNestedIf(scf::ForOp parent) {
-  return dyn_cast_or_null<scf::IfOp>(lastNonTerminator(parent.getBody()));
-}
-
 static scf::IfOp firstIfInBlock(Block *block) {
   for (Operation &op : block->without_terminator())
     if (auto ifOp = dyn_cast<scf::IfOp>(&op))
@@ -109,43 +89,39 @@ static Value createInBoundsLoadOrZero(OpBuilder &builder, Location loc,
   return loadIf.getResult(0);
 }
 
-struct ReorderedTiledMatMulLoopNest {
-  scf::ForOp forIO;
-  scf::ForOp forJO;
-  scf::ForOp forII;
-  scf::ForOp forJI;
+struct NaiveGPUMatMulLaunch {
   scf::ForOp forKO;
-  scf::ForOp forKI;
   memref::LoadOp lhsLoad;
   memref::LoadOp rhsLoad;
   memref::StoreOp store;
+  Value mVal;
+  Value nVal;
+  Value kVal;
   Value zero;
 };
 
-static FailureOr<ReorderedTiledMatMulLoopNest>
-matchReorderedTiledMatMul(scf::ForOp forIO) {
-  if (!hasConstantIndex(forIO.getLowerBound(), 0) ||
-      !hasConstantIndex(forIO.getStep(), 16) || forIO.getNumResults() != 0)
+static FailureOr<Value> matchUpperBound(Value cmpValue, Value index) {
+  auto cmp = cmpValue.getDefiningOp<arith::CmpIOp>();
+  if (!cmp || cmp.getPredicate() != arith::CmpIPredicate::ult ||
+      cmp.getLhs() != index)
+    return failure();
+  return cmp.getRhs();
+}
+
+static FailureOr<NaiveGPUMatMulLaunch>
+matchNaiveGPUMatMulLaunch(gpu::LaunchOp launch) {
+  if (launch.getNumWorkgroupAttributions() != 0 ||
+      launch.getNumPrivateAttributions() != 0 || launch.hasClusterSize() ||
+      !launch.getAsyncDependencies().empty())
     return failure();
 
-  scf::ForOp forJO = getOnlyNestedFor(forIO);
-  if (!forJO || !hasConstantIndex(forJO.getLowerBound(), 0) ||
-      !hasConstantIndex(forJO.getStep(), 16) || forJO.getNumResults() != 0)
+  gpu::KernelDim3 blockSize = launch.getBlockSizeOperandValues();
+  if (!hasConstantIndex(blockSize.x, 16) || !hasConstantIndex(blockSize.y, 16) ||
+      !hasConstantIndex(blockSize.z, 1))
     return failure();
 
-  scf::ForOp forII = getOnlyNestedFor(forJO);
-  if (!forII || !hasConstantIndex(forII.getLowerBound(), 0) ||
-      !hasConstantIndex(forII.getUpperBound(), 16) ||
-      !hasConstantIndex(forII.getStep(), 1) || forII.getNumResults() != 0)
-    return failure();
-
-  scf::ForOp forJI = getLastNestedFor(forII);
-  if (!forJI || !hasConstantIndex(forJI.getLowerBound(), 0) ||
-      !hasConstantIndex(forJI.getUpperBound(), 16) ||
-      !hasConstantIndex(forJI.getStep(), 1) || forJI.getNumResults() != 0)
-    return failure();
-
-  scf::IfOp storeGuard = getLastNestedIf(forJI);
+  scf::IfOp storeGuard =
+      dyn_cast_or_null<scf::IfOp>(lastNonTerminator(&launch.getBody().front()));
   if (!storeGuard || storeGuard.getNumResults() != 0)
     return failure();
 
@@ -191,43 +167,59 @@ matchReorderedTiledMatMul(scf::ForOp forIO) {
       store.getMemRef() == rhsLoad.getMemRef())
     return failure();
 
-  return ReorderedTiledMatMulLoopNest{forIO,  forJO,  forII, forJI, forKO,
-                                      forKI, lhsLoad, rhsLoad, store, zero};
+  if (lhsLoad.getIndices().size() != 2 || rhsLoad.getIndices().size() != 2 ||
+      store.getIndices().size() != 2)
+    return failure();
+
+  Value i = lhsLoad.getIndices()[0];
+  Value j = rhsLoad.getIndices()[1];
+  if (store.getIndices()[0] != i || store.getIndices()[1] != j)
+    return failure();
+
+  auto inMN = storeGuard.getCondition().getDefiningOp<arith::AndIOp>();
+  if (!inMN)
+    return failure();
+  Value inM = inMN.getLhs();
+  Value inN = inMN.getRhs();
+
+  FailureOr<Value> maybeMVal = matchUpperBound(inM, i);
+  FailureOr<Value> maybeNVal = matchUpperBound(inN, j);
+  if (failed(maybeMVal) || failed(maybeNVal))
+    return failure();
+
+  return NaiveGPUMatMulLaunch{forKO, lhsLoad, rhsLoad, store,
+                              *maybeMVal, *maybeNVal, forKO.getUpperBound(),
+                              zero};
 }
 
-struct PromoteMatMulWorkgroupPattern : public OpRewritePattern<scf::ForOp> {
-  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+struct PromoteMatMulWorkgroupPattern : public OpRewritePattern<gpu::LaunchOp> {
+  using OpRewritePattern<gpu::LaunchOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(scf::ForOp forIO,
+  LogicalResult matchAndRewrite(gpu::LaunchOp oldLaunch,
                                 PatternRewriter &rewriter) const final {
-    FailureOr<ReorderedTiledMatMulLoopNest> maybeNest =
-        matchReorderedTiledMatMul(forIO);
+    FailureOr<NaiveGPUMatMulLaunch> maybeNest =
+        matchNaiveGPUMatMulLaunch(oldLaunch);
     if (failed(maybeNest))
       return failure();
 
-    ReorderedTiledMatMulLoopNest nest = *maybeNest;
-    Location loc = forIO.getLoc();
+    NaiveGPUMatMulLaunch nest = *maybeNest;
+    Location loc = oldLaunch.getLoc();
     Type elementType = nest.zero.getType();
 
-    rewriter.setInsertionPoint(forIO);
+    rewriter.setInsertionPoint(oldLaunch);
     Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value c15 = rewriter.create<arith::ConstantIndexOp>(loc, 15);
     Value c16 = rewriter.create<arith::ConstantIndexOp>(loc, 16);
 
-    Value mVal = nest.forIO.getUpperBound();
-    Value nVal = nest.forJO.getUpperBound();
-    Value kVal = nest.forKO.getUpperBound();
+    Value mVal = nest.mVal;
+    Value nVal = nest.nVal;
+    Value kVal = nest.kVal;
     Value lhs = nest.lhsLoad.getMemRef();
     Value rhs = nest.rhsLoad.getMemRef();
     Value out = nest.store.getMemRef();
 
-    Value gridXNumerator = rewriter.create<arith::AddIOp>(loc, nVal, c15);
-    Value gridYNumerator = rewriter.create<arith::AddIOp>(loc, mVal, c15);
-    Value gridX =
-        rewriter.create<arith::DivUIOp>(loc, gridXNumerator, c16);
-    Value gridY =
-        rewriter.create<arith::DivUIOp>(loc, gridYNumerator, c16);
+    gpu::KernelDim3 gridSize = oldLaunch.getGridSizeOperandValues();
+    gpu::KernelDim3 blockSize = oldLaunch.getBlockSizeOperandValues();
 
     auto workgroupAddrSpace =
         gpu::AddressSpaceAttr::get(rewriter.getContext(),
@@ -237,7 +229,8 @@ struct PromoteMatMulWorkgroupPattern : public OpRewritePattern<scf::ForOp> {
                         Attribute(workgroupAddrSpace));
     SmallVector<Type, 2> tileTypes{tileType, tileType};
     auto launch = rewriter.create<gpu::LaunchOp>(
-        loc, gridX, gridY, c1, c16, c16, c1,
+        loc, gridSize.x, gridSize.y, gridSize.z, blockSize.x, blockSize.y,
+        blockSize.z,
         /*dynamicSharedMemorySize=*/Value(),
         /*asyncTokenType=*/Type(), /*asyncDependencies=*/ValueRange{},
         /*workgroupAttributions=*/tileTypes,
@@ -319,7 +312,7 @@ struct PromoteMatMulWorkgroupPattern : public OpRewritePattern<scf::ForOp> {
         });
 
     rewriter.create<gpu::TerminatorOp>(loc);
-    rewriter.eraseOp(forIO);
+    rewriter.eraseOp(oldLaunch);
     return success();
   }
 };

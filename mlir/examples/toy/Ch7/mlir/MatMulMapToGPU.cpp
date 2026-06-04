@@ -249,31 +249,37 @@ struct MapMatMulToGPUPattern : public OpRewritePattern<scf::ForOp> {
 
     rewriter.create<scf::IfOp>(
         loc, inMN, [&](OpBuilder &thenBuilder, Location loc) {
-          auto forK = thenBuilder.create<scf::ForOp>(
-              loc, c0, kVal, c1, ValueRange{nest.zero},
-              [&](OpBuilder &kBuilder, Location loc, Value k,
+          auto forKTile = thenBuilder.create<scf::ForOp>(
+              loc, c0, kVal, c16, ValueRange{nest.zero},
+              [&](OpBuilder &tileBuilder, Location loc, Value ko,
                   ValueRange iterArgs) {
-                Value acc = iterArgs[0];
-                Value inK = kBuilder.create<arith::CmpIOp>(
-                    loc, arith::CmpIPredicate::ult, k, kVal);
-                Value lhsInBounds =
-                    kBuilder.create<arith::AndIOp>(loc, inM, inK);
-                Value rhsInBounds =
-                    kBuilder.create<arith::AndIOp>(loc, inK, inN);
-                Value lhsValue =
-                    createInBoundsLoadOrZero(kBuilder, loc, lhs,
-                                             ValueRange{i, k}, lhsInBounds,
-                                             nest.zero, elementType);
-                Value rhsValue =
-                    createInBoundsLoadOrZero(kBuilder, loc, rhs,
-                                             ValueRange{k, j}, rhsInBounds,
-                                             nest.zero, elementType);
-                Value prod =
-                    kBuilder.create<arith::MulFOp>(loc, lhsValue, rhsValue);
-                Value sum = kBuilder.create<arith::AddFOp>(loc, acc, prod);
-                kBuilder.create<scf::YieldOp>(loc, sum);
+                auto forKI = tileBuilder.create<scf::ForOp>(
+                    loc, c0, c16, c1, ValueRange{iterArgs[0]},
+                    [&](OpBuilder &kBuilder, Location loc, Value ki,
+                        ValueRange iterArgs) {
+                      Value acc = iterArgs[0];
+                      Value k = kBuilder.create<arith::AddIOp>(loc, ko, ki);
+                      Value inK = kBuilder.create<arith::CmpIOp>(
+                          loc, arith::CmpIPredicate::ult, k, kVal);
+                      Value lhsInBounds =
+                          kBuilder.create<arith::AndIOp>(loc, inM, inK);
+                      Value rhsInBounds =
+                          kBuilder.create<arith::AndIOp>(loc, inK, inN);
+                      Value lhsValue = createInBoundsLoadOrZero(
+                          kBuilder, loc, lhs, ValueRange{i, k}, lhsInBounds,
+                          nest.zero, elementType);
+                      Value rhsValue = createInBoundsLoadOrZero(
+                          kBuilder, loc, rhs, ValueRange{k, j}, rhsInBounds,
+                          nest.zero, elementType);
+                      Value prod = kBuilder.create<arith::MulFOp>(
+                          loc, lhsValue, rhsValue);
+                      Value sum =
+                          kBuilder.create<arith::AddFOp>(loc, acc, prod);
+                      kBuilder.create<scf::YieldOp>(loc, sum);
+                    });
+                tileBuilder.create<scf::YieldOp>(loc, forKI.getResult(0));
               });
-          thenBuilder.create<memref::StoreOp>(loc, forK.getResult(0), out,
+          thenBuilder.create<memref::StoreOp>(loc, forKTile.getResult(0), out,
                                               ValueRange{i, j});
           thenBuilder.create<scf::YieldOp>(loc, ValueRange{});
         });

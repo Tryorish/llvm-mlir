@@ -35,6 +35,7 @@ Toy/MLIR input
   -> toy-matmul-to-scf
   -> toy-matmul-tile-loops
   -> toy-matmul-reorder-tiled-loops
+  -> toy-matmul-map-to-gpu
   -> toy-matmul-promote-workgroup-memory
   -> func-level canonicalizer
   -> func-level CSE
@@ -43,17 +44,35 @@ Toy/MLIR input
 
 ## 输入
 
-阶段 4 的 reordered tiled loop nest。当前实现直接从 reordered loop 生成 workgroup 版本的 `gpu.launch`，不先经过 Stage 5 的 naive launch。
+阶段 5 生成的 naive GPU launch。Stage 6 不再直接匹配阶段 4 的 reordered
+SCF loop nest，而是在 Stage 5 的 `gpu.launch` 上做 workgroup memory promotion。
 
 ```mlir
-for io
-  for jo
-    for ii
-      for ji
-        for ko
-          for ki
-            accumulate
+gpu.launch blocks(...) threads(16, 16, 1) {
+  row = blockIdx.y * 16 + threadIdx.y
+  col = blockIdx.x * 16 + threadIdx.x
+  if row < M && col < N
+    for ko step 16
+      for ki step 1
+        k = ko + ki
+        load A[row, k]
+        load B[k, col]
+        accumulate
+    store C[row, col]
+}
 ```
+
+这一点是阶段边界：
+
+```text
+Stage 5:
+  reordered tiled loop -> naive gpu.launch
+
+Stage 6:
+  naive gpu.launch -> workgroup gpu.launch
+```
+
+Stage 6 不绕过 Stage 5，也不重复做 loop-to-GPU mapping。
 
 ## 输出
 
@@ -84,6 +103,7 @@ gpu.launch workgroup(%tileA, %tileB) {
 6. shared tile store 后已插入 gpu.barrier。
 7. inner ki loop 已改为读取 tileA/tileB。
 8. inner reduction 后已再插入 gpu.barrier。
+9. 最终 C store 仍保留在 row/col inBounds guard 内。
 ```
 
 ## 注意事项
@@ -118,11 +138,15 @@ mlir/test/Examples/Toy/Ch7/matmul70-gpu-workgroup.mlir
 
 ## 当前实现范围
 
-`MatMulPromoteWorkgroupMemory.cpp` 是一个 loop-level rewrite pass：
+`MatMulPromoteWorkgroupMemory.cpp` 是一个 launch-level rewrite pass：
 
 ```text
 只匹配：
-  Stage 4 输出的 io/jo/ii/ji/ko/ki reordered tiled matmul loop nest。
+  Stage 5 输出的 naive gpu.launch：
+    - blocks/grid 已由 Stage 5 计算。
+    - threads 为 16 x 16 x 1。
+    - launch 内部保留 ko/ki reduction。
+    - launch 尚未包含 workgroup attribution。
 
 改写为：
   gpu.launch blocks(gridX, gridY, 1) threads(16, 16, 1)

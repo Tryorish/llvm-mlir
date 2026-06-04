@@ -31,13 +31,19 @@ module {
 // CHECK:           [[IN_N:%.*]] = arith.cmpi ult, [[J]], [[C64]] : index
 // CHECK:           [[IN_MN:%.*]] = arith.andi [[IN_M]], [[IN_N]] : i1
 // CHECK:           scf.if [[IN_MN]] {
-// CHECK:             [[SUM:%.*]] = scf.for [[K:%.*]] = [[C0]] to [[C64]] step [[C1]]
+// CHECK:             [[SUM:%.*]] = scf.for [[KO:%.*]] = [[C0]] to [[C64]] step [[C16]]
 // CHECK-SAME:            iter_args
 // CHECK-SAME:            -> (f64) {
-// CHECK:               memref.load {{.*}}[[I]], [[K]]{{.*}} : memref<64x64xf64>
-// CHECK:               memref.load {{.*}}[[K]], [[J]]{{.*}} : memref<64x64xf64>
-// CHECK:               arith.mulf
-// CHECK:               arith.addf
+// CHECK:               scf.for [[KI:%.*]] = [[C0]] to [[C16]] step [[C1]]
+// CHECK-SAME:              iter_args
+// CHECK-SAME:              -> (f64) {
+// CHECK:                 [[K:%.*]] = arith.addi [[KO]], [[KI]] : index
+// CHECK:                 memref.load {{.*}}[[I]], [[K]]{{.*}} : memref<64x64xf64>
+// CHECK:                 memref.load {{.*}}[[K]], [[J]]{{.*}} : memref<64x64xf64>
+// CHECK:                 arith.mulf
+// CHECK:                 arith.addf
+// CHECK:                 scf.yield
+// CHECK:               }
 // CHECK:               scf.yield
 // CHECK:             }
 // CHECK:             memref.store [[SUM]], [[OUT]][[[I]], [[J]]] : memref<64x64xf64>
