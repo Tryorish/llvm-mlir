@@ -25,6 +25,9 @@ std::unique_ptr<Pass> createShapeInferencePass();
 /// for a subset of the Toy IR (e.g. matmul).
 std::unique_ptr<mlir::Pass> createLowerToAffinePass();
 
+/// Create a pass for lowering `toy.matmul` to a naive `scf.for` loop nest.
+std::unique_ptr<mlir::Pass> createMatMulToSCFPass();
+
 /// Create a pass for lowering to operations in the `GPU` dialect,
 /// for a subset of the Toy IR (e.g. matmul).
 std::unique_ptr<mlir::Pass> createLowerToGPUPass();

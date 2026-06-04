@@ -91,6 +91,7 @@ enum Action {
   None,
   DumpAST,
   DumpMLIR,
+  DumpMLIRSCFMatMul,
   DumpMLIRAffine,
   DumpMLIRGPU,
   DumpMLIRGPUOutlined,
@@ -108,6 +109,9 @@ static cl::opt<enum Action> emitAction(
     "emit", cl::desc("Select the kind of output desired"),
     cl::values(clEnumValN(DumpAST, "ast", "output the AST dump")),
     cl::values(clEnumValN(DumpMLIR, "mlir", "output the MLIR dump")),
+    cl::values(clEnumValN(
+        DumpMLIRSCFMatMul, "mlir-scf-matmul",
+        "output the MLIR dump after lowering toy.matmul to scf.for loops")),
     cl::values(clEnumValN(DumpMLIRAffine, "mlir-affine",
                           "output the MLIR dump after affine lowering")),
     cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
@@ -225,6 +229,7 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   bool isLoweringGPUHost = emitAction == Action::DumpMLIRGPUHost ||
                            emitAction == Action::DumpLLVMGPU ||
                            emitAction == Action::RunGPUJIT;
+  bool isLoweringToSCFMatMul = emitAction == Action::DumpMLIRSCFMatMul;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction == Action::DumpMLIRLLVM ||
                             emitAction == Action::DumpLLVMIR ||
@@ -233,7 +238,8 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
                           emitAction == Action::DumpLLVMIR ||
                           emitAction == Action::RunJIT;
 
-  if (enableOpt || isLoweringToAffine || isLoweringToGPU) {
+  if (enableOpt || isLoweringToSCFMatMul || isLoweringToAffine ||
+      isLoweringToGPU) {
     // Inline all functions into main and then delete them.
     pm.addPass(mlir::createInlinerPass());
 
@@ -242,6 +248,14 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
     mlir::OpPassManager &optPM = pm.nest<mlir::toy::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());
     optPM.addPass(mlir::toy::createShapeInferencePass());
+    optPM.addPass(mlir::createCanonicalizerPass());
+    optPM.addPass(mlir::createCSEPass());
+  }
+
+  if (isLoweringToSCFMatMul) {
+    pm.addPass(mlir::toy::createMatMulToSCFPass());
+
+    mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());
     optPM.addPass(mlir::createCSEPass());
   }
@@ -481,6 +495,7 @@ int main(int argc, char **argv) {
 
   // If we aren't exporting to non-mlir, then we are done.
   bool isOutputingMLIR = emitAction == Action::DumpMLIR ||
+                         emitAction == Action::DumpMLIRSCFMatMul ||
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
                          emitAction == Action::DumpMLIRGPUOutlined ||

@@ -4,19 +4,40 @@
 
 这一阶段不涉及 GPU，也不涉及 shared memory。
 
-## 建议新增 Pass
+## 已新增 Pass
 
 ```text
 toy-matmul-to-scf
 ```
 
-建议实现文件：
+实现文件：
 
 ```text
 mlir/examples/toy/Ch7/mlir/MatMulToSCF.cpp
 mlir/examples/toy/Ch7/include/toy/Passes.h
 mlir/examples/toy/Ch7/toyc.cpp
 mlir/examples/toy/Ch7/CMakeLists.txt
+```
+
+新增 emit action：
+
+```text
+-emit=mlir-scf-matmul
+```
+
+pipeline 形状：
+
+```text
+Toy/MLIR input
+  -> inliner
+  -> canonicalizer
+  -> toy shape inference
+  -> canonicalizer
+  -> CSE
+  -> toy-matmul-to-scf
+  -> func-level canonicalizer
+  -> func-level CSE
+  -> dump MLIR
 ```
 
 ## 输入
@@ -56,15 +77,35 @@ scf.for %i = %c0 to %M step %c1 {
 ## 实施步骤
 
 ```text
-1. 新增 createMatMulToSCFPass() 声明。
-2. 新增 pass 实现，只匹配 toy.matmul。
-3. 为 result tensor 创建 host memref.alloc。
-4. 把 lhs/rhs operand 转成当前 lower pipeline 可使用的 memref。
-5. 生成 i/j/k 三层 scf.for。
-6. 用 scf.for iter_args 表达 sum accumulation。
-7. 用输出 memref 替换 toy.matmul。
-8. 接入一个只停在 SCF 的 emit action 或测试入口。
+1. 已新增 createMatMulToSCFPass() 声明。
+2. 已新增 MatMulToSCF.cpp。
+3. 已在 CMakeLists.txt 加入 MatMulToSCF.cpp。
+4. 已在 toyc.cpp 新增 -emit=mlir-scf-matmul。
+5. 已让 -emit=mlir-scf-matmul 跑 inline + shape inference。
+6. 已为 result tensor 创建 host memref.alloc。
+7. 已把 lhs/rhs operand 转成当前 lowering pipeline 可使用的 memref。
+8. 已生成 i/j/k 三层 scf.for。
+9. 已用 scf.for iter_args 表达 sum accumulation。
+10. 已用输出 memref 替换 toy.matmul。
 ```
+
+## 当前实现范围
+
+`MatMulToSCF.cpp` 当前不是只转换单个 `toy.matmul`，而是做一个可停在 SCF/memref 层的 Toy partial lowering：
+
+```text
+toy.constant   -> memref.alloc + memref.store
+toy.add        -> scf loop + memref.load/store + arith.addf
+toy.mul        -> scf loop + memref.load/store + arith.mulf
+toy.neg        -> scf loop + memref.load/store + arith.negf
+toy.transpose  -> scf loop + memref.load/store
+toy.matmul     -> naive i/j/k scf.for matmul
+toy.func main  -> func.func main
+toy.return     -> func.return
+toy.print      -> 保留 toy.print，但 operand 更新为 memref
+```
+
+这样做是为了让 `toy.matmul` 的输入在同一个 pass 内已经是 memref，输出也能被 `toy.print` 接住。
 
 ## 边界
 
@@ -104,8 +145,40 @@ gpu.alloc
 gpu.memcpy
 ```
 
-建议新增测试：
+已新增测试：
 
 ```text
 mlir/test/Examples/Toy/Ch7/matmul64-scf-lowering.mlir
+```
+
+测试命令：
+
+```bash
+./build/bin/llvm-lit mlir/test/Examples/Toy/Ch7/matmul64-scf-lowering.mlir
+```
+
+或手动查看：
+
+```bash
+./build/bin/toyc-ch7 mlir/test/Examples/Toy/Ch7/matmul64-scf-lowering.mlir \
+  -emit=mlir-scf-matmul -x=mlir
+```
+
+当前执行状态：
+
+```text
+已完成：
+  - 新增 MatMulToSCF.cpp。
+  - 新增 createMatMulToSCFPass() 声明。
+  - 新增 -emit=mlir-scf-matmul。
+  - CMake 已加入新源文件。
+  - 新增 matmul64-scf-lowering.mlir FileCheck 测试。
+
+未在本地执行：
+  - ninja -C build toyc-ch7
+  - toyc-ch7 -emit=mlir-scf-matmul
+  - llvm-lit matmul64-scf-lowering.mlir
+
+未执行原因：
+  - 本轮延续前置要求：本地不要编译。
 ```
