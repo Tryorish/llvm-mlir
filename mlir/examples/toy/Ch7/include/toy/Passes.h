@@ -32,6 +32,10 @@ std::unique_ptr<mlir::Pass> createMatMulToSCFPass();
 /// loops.
 std::unique_ptr<mlir::Pass> createMatMulTileLoopsPass();
 
+/// Create a pass for recognizing the reordered tiled matmul loop nest that is
+/// ready for GPU mapping.
+std::unique_ptr<mlir::Pass> createMatMulReorderTiledLoopsPass();
+
 /// Create a pass for lowering to operations in the `GPU` dialect,
 /// for a subset of the Toy IR (e.g. matmul).
 std::unique_ptr<mlir::Pass> createLowerToGPUPass();

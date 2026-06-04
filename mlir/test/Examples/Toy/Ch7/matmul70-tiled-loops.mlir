@@ -21,27 +21,26 @@ module {
 // CHECK:         [[OUT:%.*]] = memref.alloc() : memref<70x70xf64>
 // CHECK:         scf.for [[IO:%.*]] = [[C0]] to [[C70]] step [[C16]] {
 // CHECK:           scf.for [[JO:%.*]] = [[C0]] to [[C70]] step [[C16]] {
-// CHECK:             scf.for [[II:%.*]] = [[C0]] to [[C16]] step [[C1]] {
-// CHECK:               [[I:%.*]] = arith.addi [[IO]], [[II]] : index
-// CHECK:               [[IN_M:%.*]] = arith.cmpi ult, [[I]], [[C70]] : index
-// CHECK:               scf.for [[JI:%.*]] = [[C0]] to [[C16]] step [[C1]] {
-// CHECK:                 [[J:%.*]] = arith.addi [[JO]], [[JI]] : index
-// CHECK:                 [[IN_N:%.*]] = arith.cmpi ult, [[J]], [[C70]] : index
-// CHECK:                 [[IN_MN:%.*]] = arith.andi [[IN_M]], [[IN_N]] : i1
-// CHECK:                 scf.if [[IN_MN]] {
-// CHECK:                   scf.for [[KO:%.*]] = [[C0]] to [[C70]] step [[C16]]
+// CHECK:             scf.for [[KO:%.*]] = [[C0]] to [[C70]] step [[C16]] {
+// CHECK:               scf.for [[II:%.*]] = [[C0]] to [[C16]] step [[C1]] {
+// CHECK:                 [[I:%.*]] = arith.addi [[IO]], [[II]] : index
+// CHECK:                 [[IN_M:%.*]] = arith.cmpi ult, [[I]], [[C70]] : index
+// CHECK:                 scf.for [[JI:%.*]] = [[C0]] to [[C16]] step [[C1]] {
+// CHECK:                   [[J:%.*]] = arith.addi [[JO]], [[JI]] : index
+// CHECK:                   [[IN_N:%.*]] = arith.cmpi ult, [[J]], [[C70]] : index
+// CHECK:                   [[IN_MN:%.*]] = arith.andi [[IN_M]], [[IN_N]] : i1
+// CHECK:                   scf.if [[IN_MN]] {
+// CHECK:                     scf.if {{.*}} -> (f64) {
+// CHECK:                     scf.for [[KI:%.*]] = [[C0]] to [[C16]] step [[C1]]
 // CHECK-SAME:                  iter_args
 // CHECK-SAME:                  -> (f64) {
-// CHECK:                     scf.for [[KI:%.*]] = [[C0]] to [[C16]] step [[C1]]
-// CHECK-SAME:                    iter_args
-// CHECK-SAME:                    -> (f64) {
-// CHECK:                       [[K:%.*]] = arith.addi [[KO]], [[KI]] : index
-// CHECK:                       [[IN_K:%.*]] = arith.cmpi ult, [[K]], [[C70]] : index
-// CHECK:                       arith.andi {{.*}}, [[IN_K]] : i1
-// CHECK:                       arith.andi [[IN_K]], {{.*}} : i1
-// CHECK:                       scf.yield
-// CHECK:                     }
-// CHECK:                     scf.yield
+// CHECK:                         [[K:%.*]] = arith.addi [[KO]], [[KI]] : index
+// CHECK:                         [[IN_K:%.*]] = arith.cmpi ult, [[K]], [[C70]] : index
+// CHECK:                         arith.andi {{.*}}, [[IN_K]] : i1
+// CHECK:                         arith.andi [[IN_K]], {{.*}} : i1
+// CHECK:                         scf.yield
+// CHECK:                       }
+// CHECK:                       memref.store {{.*}}, [[OUT]][[[I]], [[J]]] : memref<70x70xf64>
 // CHECK:                   }
 // CHECK:                 }
 // CHECK:               }

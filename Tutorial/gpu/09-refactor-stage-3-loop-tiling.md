@@ -62,9 +62,9 @@ for i
 ```text
 for io step 16
   for jo step 16
-    for ii step 1
-      for ji step 1
-        for ko step 16
+    for ko step 16
+      for ii step 1
+        for ji step 1
           for ki step 1
 ```
 
@@ -95,7 +95,7 @@ i/j 外层边界：
   inM = i < M
   inN = j < N
   inMN = inM && inN
-  scf.if inMN { ... compute and store C[i, j] ... }
+  scf.if inMN { ... compute and store partial C[i, j] ... }
 
 k 内层边界：
   inK = k < K
@@ -104,7 +104,7 @@ k 内层边界：
   越界 load yield 0.0
 ```
 
-注意：当前 loop 顺序是 `io/jo/ii/ji/ko/ki`。这仍然完成三维循环切分，但把一个输出点 `(i, j)` 的完整 K 维累加放在同一个局部累加链里，最后只 store 一次 `C[i, j]`。这样不需要在不同 `ko` tile 之间通过输出 memref 读旧值继续累加，后续阶段再把 `ko/ki` 映射到 tile 内 reduction 会更直接。
+注意：当前 loop 顺序是 `io/jo/ko/ii/ji/ki`。这一阶段只负责 split/tile，不做 reorder。为了保持跨 `ko` tile 的累加语义，每个 `(i, j)` 在 `ko == 0` 时从 `0.0` 开始，否则从当前输出 `C[i, j]` 读回 partial sum 继续累加，并在每个 `ko` tile 后写回 partial sum。
 
 ## 实施步骤
 
@@ -114,7 +114,7 @@ k 内层边界：
 3. 已拆分 i/j/k 三个 induction variable。
 4. 已用 io+ii、jo+ji、ko+ki 替换原 load/store index。
 5. 已在 load/store 前插入边界判断。
-6. 已保留 accumulation 语义不变：每个 `(i, j)` 从 0.0 开始，跨所有 `ko/ki` 累加后 store 一次。
+6. 已保留 accumulation 语义不变：跨 `ko` tile 通过输出 memref 暂存 partial sum。
 7. 输出仍是 host-side SCF/memref IR。
 8. 已新增 -emit=mlir-tiled-matmul。
 9. 已新增 64x64 和 70x70 FileCheck 测试。
@@ -163,15 +163,13 @@ k 内层边界：
 必须能看到：
 
 ```text
-外层 i/j tile loop step 16
-内层 i/j point loop step 1
-每个输出点内部的 k tile loop step 16
-最内层 k point loop step 1
+外层 i/j/k tile loop step 16
+内层 i/j/k point loop step 1
 i = io + ii
 j = jo + ji
 k = ko + ki
 显式 i < M, j < N, k < K 边界判断
-每个 C[i, j] 只 store 一次
+每个 `ko` tile 后写回 partial C[i, j]
 ```
 
 不能出现：

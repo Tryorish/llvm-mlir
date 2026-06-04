@@ -26,6 +26,7 @@ add_toy_chapter(toyc-ch7
   mlir/LowerToAffineLoops.cpp
   mlir/LowerToGPU.cpp
   mlir/LowerToLLVM.cpp
+  mlir/MatMulReorderTiledLoops.cpp
   mlir/MatMulToSCF.cpp
   mlir/MatMulTileLoops.cpp
   mlir/ShapeInferencePass.cpp

@@ -93,6 +93,7 @@ enum Action {
   DumpMLIR,
   DumpMLIRSCFMatMul,
   DumpMLIRTiledMatMul,
+  DumpMLIRReorderedTiledMatMul,
   DumpMLIRAffine,
   DumpMLIRGPU,
   DumpMLIRGPUOutlined,
@@ -115,6 +116,9 @@ static cl::opt<enum Action> emitAction(
         "output the MLIR dump after lowering toy.matmul to scf.for loops")),
     cl::values(clEnumValN(DumpMLIRTiledMatMul, "mlir-tiled-matmul",
                           "output the MLIR dump after tiling matmul loops")),
+    cl::values(clEnumValN(
+        DumpMLIRReorderedTiledMatMul, "mlir-reordered-tiled-matmul",
+        "output the MLIR dump after reordering tiled matmul loops")),
     cl::values(clEnumValN(DumpMLIRAffine, "mlir-affine",
                           "output the MLIR dump after affine lowering")),
     cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
@@ -232,9 +236,14 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
   bool isLoweringGPUHost = emitAction == Action::DumpMLIRGPUHost ||
                            emitAction == Action::DumpLLVMGPU ||
                            emitAction == Action::RunGPUJIT;
-  bool isLoweringToSCFMatMul = emitAction == Action::DumpMLIRSCFMatMul ||
-                               emitAction == Action::DumpMLIRTiledMatMul;
-  bool isTilingMatMul = emitAction == Action::DumpMLIRTiledMatMul;
+  bool isLoweringToSCFMatMul =
+      emitAction == Action::DumpMLIRSCFMatMul ||
+      emitAction == Action::DumpMLIRTiledMatMul ||
+      emitAction == Action::DumpMLIRReorderedTiledMatMul;
+  bool isTilingMatMul = emitAction == Action::DumpMLIRTiledMatMul ||
+                        emitAction == Action::DumpMLIRReorderedTiledMatMul;
+  bool isReorderingTiledMatMul =
+      emitAction == Action::DumpMLIRReorderedTiledMatMul;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction == Action::DumpMLIRLLVM ||
                             emitAction == Action::DumpLLVMIR ||
@@ -262,6 +271,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
     if (isTilingMatMul)
       pm.addPass(mlir::toy::createMatMulTileLoopsPass());
+
+    if (isReorderingTiledMatMul)
+      pm.addPass(mlir::toy::createMatMulReorderTiledLoopsPass());
 
     mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());
@@ -505,6 +517,8 @@ int main(int argc, char **argv) {
   bool isOutputingMLIR = emitAction == Action::DumpMLIR ||
                          emitAction == Action::DumpMLIRSCFMatMul ||
                          emitAction == Action::DumpMLIRTiledMatMul ||
+                         emitAction ==
+                             Action::DumpMLIRReorderedTiledMatMul ||
                          emitAction == Action::DumpMLIRAffine ||
                          emitAction == Action::DumpMLIRGPU ||
                          emitAction == Action::DumpMLIRGPUOutlined ||
