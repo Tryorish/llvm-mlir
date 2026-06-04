@@ -44,6 +44,10 @@ std::unique_ptr<mlir::Pass> createMatMulMapToGPUPass();
 /// with workgroup-memory tile promotion.
 std::unique_ptr<mlir::Pass> createMatMulPromoteWorkgroupMemoryPass();
 
+/// Create a pass for inserting explicit GPU device buffers around a
+/// host-memref `gpu.launch`.
+std::unique_ptr<mlir::Pass> createGPUInsertDeviceMemoryPass();
+
 /// Create a pass for lowering to operations in the `GPU` dialect,
 /// for a subset of the Toy IR (e.g. matmul).
 std::unique_ptr<mlir::Pass> createLowerToGPUPass();

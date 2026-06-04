@@ -96,6 +96,7 @@ enum Action {
   DumpMLIRReorderedTiledMatMul,
   DumpMLIRGPUNaiveMatMul,
   DumpMLIRGPUWorkgroupMatMul,
+  DumpMLIRGPUDeviceMemoryMatMul,
   DumpMLIRAffine,
   DumpMLIRGPU,
   DumpMLIRGPUOutlined,
@@ -127,6 +128,9 @@ static cl::opt<enum Action> emitAction(
     cl::values(clEnumValN(
         DumpMLIRGPUWorkgroupMatMul, "mlir-gpu-workgroup-matmul",
         "output the MLIR dump after promoting matmul tiles to workgroup memory")),
+    cl::values(clEnumValN(
+        DumpMLIRGPUDeviceMemoryMatMul, "mlir-gpu-device-memory-matmul",
+        "output the MLIR dump after inserting GPU device memory for matmul")),
     cl::values(clEnumValN(DumpMLIRAffine, "mlir-affine",
                           "output the MLIR dump after affine lowering")),
     cl::values(clEnumValN(DumpMLIRGPU, "mlir-gpu",
@@ -249,20 +253,27 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
       emitAction == Action::DumpMLIRTiledMatMul ||
       emitAction == Action::DumpMLIRReorderedTiledMatMul ||
       emitAction == Action::DumpMLIRGPUNaiveMatMul ||
-      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
   bool isTilingMatMul = emitAction == Action::DumpMLIRTiledMatMul ||
                         emitAction == Action::DumpMLIRReorderedTiledMatMul ||
                         emitAction == Action::DumpMLIRGPUNaiveMatMul ||
-                        emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
+                        emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
+                        emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
   bool isReorderingTiledMatMul =
       emitAction == Action::DumpMLIRReorderedTiledMatMul ||
       emitAction == Action::DumpMLIRGPUNaiveMatMul ||
-      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
   bool isMappingMatMulToGPU =
       emitAction == Action::DumpMLIRGPUNaiveMatMul ||
-      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
   bool isPromotingMatMulWorkgroupMemory =
-      emitAction == Action::DumpMLIRGPUWorkgroupMatMul;
+      emitAction == Action::DumpMLIRGPUWorkgroupMatMul ||
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
+  bool isInsertingGPUDeviceMemory =
+      emitAction == Action::DumpMLIRGPUDeviceMemoryMatMul;
   bool isLoweringToAffine = emitAction == Action::DumpMLIRAffine ||
                             emitAction == Action::DumpMLIRLLVM ||
                             emitAction == Action::DumpLLVMIR ||
@@ -299,6 +310,9 @@ int loadAndProcessMLIR(mlir::MLIRContext &context,
 
     if (isPromotingMatMulWorkgroupMemory)
       pm.addPass(mlir::toy::createMatMulPromoteWorkgroupMemoryPass());
+
+    if (isInsertingGPUDeviceMemory)
+      pm.addPass(mlir::toy::createGPUInsertDeviceMemoryPass());
 
     mlir::OpPassManager &optPM = pm.nest<mlir::func::FuncOp>();
     optPM.addPass(mlir::createCanonicalizerPass());

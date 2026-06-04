@@ -23,6 +23,7 @@ add_toy_chapter(toyc-ch7
   parser/AST.cpp
   mlir/MLIRGen.cpp
   mlir/Dialect.cpp
+  mlir/GPUDeviceMemory.cpp
   mlir/LowerToAffineLoops.cpp
   mlir/LowerToGPU.cpp
   mlir/LowerToLLVM.cpp
