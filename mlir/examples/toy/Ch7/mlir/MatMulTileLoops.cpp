@@ -86,6 +86,47 @@ static Value createInBoundsLoadOrZero(OpBuilder &builder, Location loc,
   return loadIf.getResult(0);
 }
 
+static Value createTiledReductionForPoint(OpBuilder &builder, Location loc,
+                                          Value lhs, Value rhs, Value i,
+                                          Value j, Value inM, Value inN,
+                                          Value kVal, Value c0, Value c1,
+                                          Value c16, Value zero,
+                                          Type elementType) {
+  auto forKO = builder.create<scf::ForOp>(
+      loc, c0, kVal, c16, ValueRange{zero},
+      [&](OpBuilder &koBuilder, Location loc, Value ko, ValueRange iterArgs) {
+        Value tileAcc = iterArgs[0];
+        auto forKI = koBuilder.create<scf::ForOp>(
+            loc, c0, c16, c1, ValueRange{tileAcc},
+            [&](OpBuilder &kiBuilder, Location loc, Value ki,
+                ValueRange iterArgs) {
+              Value acc = iterArgs[0];
+              Value k = kiBuilder.create<arith::AddIOp>(loc, ko, ki);
+              Value inK = kiBuilder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::ult, k, kVal);
+              Value lhsInBounds =
+                  kiBuilder.create<arith::AndIOp>(loc, inM, inK);
+              Value rhsInBounds =
+                  kiBuilder.create<arith::AndIOp>(loc, inK, inN);
+              Value lhsValue =
+                  createInBoundsLoadOrZero(kiBuilder, loc, lhs,
+                                           ValueRange{i, k}, lhsInBounds, zero,
+                                           elementType);
+              Value rhsValue =
+                  createInBoundsLoadOrZero(kiBuilder, loc, rhs,
+                                           ValueRange{k, j}, rhsInBounds, zero,
+                                           elementType);
+              Value prod =
+                  kiBuilder.create<arith::MulFOp>(loc, lhsValue, rhsValue);
+              Value sum = kiBuilder.create<arith::AddFOp>(loc, acc, prod);
+              kiBuilder.create<scf::YieldOp>(loc, sum);
+            });
+        koBuilder.create<scf::YieldOp>(loc, forKI.getResult(0));
+      });
+
+  return forKO.getResult(0);
+}
+
 struct MatMulLoopNest {
   scf::ForOp forI;
   scf::ForOp forJ;
@@ -180,117 +221,40 @@ struct TileMatMulLoopPattern : public OpRewritePattern<scf::ForOp> {
               [&](OpBuilder &joBuilder, Location loc, Value jo,
                   ValueRange iterArgs) {
                 joBuilder.create<scf::ForOp>(
-                    loc, c0, kVal, c16, ValueRange{},
-                    [&](OpBuilder &koBuilder, Location loc, Value ko,
+                    loc, c0, c16, c1, ValueRange{},
+                    [&](OpBuilder &iiBuilder, Location loc, Value ii,
                         ValueRange iterArgs) {
-                      koBuilder.create<scf::ForOp>(
+                      Value i =
+                          iiBuilder.create<arith::AddIOp>(loc, io, ii);
+                      Value inM = iiBuilder.create<arith::CmpIOp>(
+                          loc, arith::CmpIPredicate::ult, i, mVal);
+
+                      iiBuilder.create<scf::ForOp>(
                           loc, c0, c16, c1, ValueRange{},
-                          [&](OpBuilder &iiBuilder, Location loc, Value ii,
+                          [&](OpBuilder &jiBuilder, Location loc, Value ji,
                               ValueRange iterArgs) {
-                            Value i =
-                                iiBuilder.create<arith::AddIOp>(loc, io, ii);
-                            Value inM = iiBuilder.create<arith::CmpIOp>(
-                                loc, arith::CmpIPredicate::ult, i, mVal);
+                            Value j =
+                                jiBuilder.create<arith::AddIOp>(loc, jo, ji);
+                            Value inN = jiBuilder.create<arith::CmpIOp>(
+                                loc, arith::CmpIPredicate::ult, j, nVal);
+                            Value inMN =
+                                jiBuilder.create<arith::AndIOp>(loc, inM, inN);
 
-                            iiBuilder.create<scf::ForOp>(
-                                loc, c0, c16, c1, ValueRange{},
-                                [&](OpBuilder &jiBuilder, Location loc,
-                                    Value ji, ValueRange iterArgs) {
-                                  Value j = jiBuilder.create<arith::AddIOp>(
-                                      loc, jo, ji);
-                                  Value inN = jiBuilder.create<arith::CmpIOp>(
-                                      loc, arith::CmpIPredicate::ult, j, nVal);
-                                  Value inMN =
-                                      jiBuilder.create<arith::AndIOp>(loc, inM,
-                                                                      inN);
-
-                                  auto storeIf = jiBuilder.create<scf::IfOp>(
-                                      loc, inMN, /*withElseRegion=*/true);
-                                  OpBuilder thenBuilder =
-                                      storeIf.getThenBodyBuilder(
-                                          jiBuilder.getListener());
-
-                                  Value isFirstKTile =
-                                      thenBuilder.create<arith::CmpIOp>(
-                                          loc, arith::CmpIPredicate::eq, ko,
-                                          c0);
-                                  auto accInitIf =
-                                      thenBuilder.create<scf::IfOp>(
-                                          loc, TypeRange{elementType},
-                                          isFirstKTile,
-                                          /*withElseRegion=*/true);
-                                  OpBuilder initThenBuilder =
-                                      accInitIf.getThenBodyBuilder(
-                                          thenBuilder.getListener());
-                                  initThenBuilder.create<scf::YieldOp>(loc,
-                                                                       zero);
-                                  OpBuilder initElseBuilder =
-                                      accInitIf.getElseBodyBuilder(
-                                          thenBuilder.getListener());
-                                  Value old = initElseBuilder
-                                                  .create<memref::LoadOp>(
-                                                      loc, out,
-                                                      ValueRange{i, j});
-                                  initElseBuilder.create<scf::YieldOp>(loc,
-                                                                       old);
-
-                                  auto forKI =
-                                      thenBuilder.create<scf::ForOp>(
-                                          loc, c0, c16, c1,
-                                          ValueRange{accInitIf.getResult(0)},
-                                          [&](OpBuilder &kiBuilder,
-                                              Location loc, Value ki,
-                                              ValueRange iterArgs) {
-                                            Value acc = iterArgs[0];
-                                            Value k = kiBuilder
-                                                          .create<arith::AddIOp>(
-                                                              loc, ko, ki);
-                                            Value inK =
-                                                kiBuilder.create<arith::CmpIOp>(
-                                                    loc,
-                                                    arith::CmpIPredicate::ult,
-                                                    k, kVal);
-                                            Value lhsInBounds =
-                                                kiBuilder.create<arith::AndIOp>(
-                                                    loc, inM, inK);
-                                            Value rhsInBounds =
-                                                kiBuilder.create<arith::AndIOp>(
-                                                    loc, inK, inN);
-                                            Value lhsValue =
-                                                createInBoundsLoadOrZero(
-                                                    kiBuilder, loc, lhs,
-                                                    ValueRange{i, k},
-                                                    lhsInBounds, zero,
-                                                    elementType);
-                                            Value rhsValue =
-                                                createInBoundsLoadOrZero(
-                                                    kiBuilder, loc, rhs,
-                                                    ValueRange{k, j},
-                                                    rhsInBounds, zero,
-                                                    elementType);
-                                            Value prod =
-                                                kiBuilder
-                                                    .create<arith::MulFOp>(
-                                                        loc, lhsValue,
-                                                        rhsValue);
-                                            Value sum =
-                                                kiBuilder
-                                                    .create<arith::AddFOp>(
-                                                        loc, acc, prod);
-                                            kiBuilder.create<scf::YieldOp>(
-                                                loc, sum);
-                                          });
+                            jiBuilder.create<scf::IfOp>(
+                                loc, inMN,
+                                [&](OpBuilder &thenBuilder, Location loc) {
+                                  Value sum = createTiledReductionForPoint(
+                                      thenBuilder, loc, lhs, rhs, i, j, inM,
+                                      inN, kVal, c0, c1, c16, zero,
+                                      elementType);
                                   thenBuilder.create<memref::StoreOp>(
-                                      loc, forKI.getResult(0), out,
-                                      ValueRange{i, j});
-                                  [[maybe_unused]] OpBuilder elseBuilder =
-                                      storeIf.getElseBodyBuilder(
-                                          jiBuilder.getListener());
-                                  jiBuilder.create<scf::YieldOp>(loc);
+                                      loc, sum, out, ValueRange{i, j});
+                                  thenBuilder.create<scf::YieldOp>(loc,
+                                                                   ValueRange{});
                                 });
-                            iiBuilder.create<scf::YieldOp>(loc);
+                            jiBuilder.create<scf::YieldOp>(loc);
                           });
-                      koBuilder.create<scf::YieldOp>(loc);
+                      iiBuilder.create<scf::YieldOp>(loc);
                     });
                 joBuilder.create<scf::YieldOp>(loc);
               });
