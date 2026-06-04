@@ -205,7 +205,7 @@ struct TileMatMulLoopPattern : public OpRewritePattern<scf::ForOp> {
                                                                       inN);
 
                                   auto storeIf = jiBuilder.create<scf::IfOp>(
-                                      loc, inMN, /*withElseRegion=*/false);
+                                      loc, inMN, /*withElseRegion=*/true);
                                   OpBuilder thenBuilder =
                                       storeIf.getThenBodyBuilder(
                                           jiBuilder.getListener());
@@ -283,6 +283,11 @@ struct TileMatMulLoopPattern : public OpRewritePattern<scf::ForOp> {
                                   thenBuilder.create<memref::StoreOp>(
                                       loc, forKI.getResult(0), out,
                                       ValueRange{i, j});
+                                  thenBuilder.create<scf::YieldOp>(loc);
+                                  OpBuilder elseBuilder =
+                                      storeIf.getElseBodyBuilder(
+                                          jiBuilder.getListener());
+                                  elseBuilder.create<scf::YieldOp>(loc);
                                 });
                           });
                     });
