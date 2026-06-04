@@ -286,10 +286,15 @@ struct TileMatMulLoopPattern : public OpRewritePattern<scf::ForOp> {
                                   [[maybe_unused]] OpBuilder elseBuilder =
                                       storeIf.getElseBodyBuilder(
                                           jiBuilder.getListener());
+                                  jiBuilder.create<scf::YieldOp>(loc);
                                 });
+                            iiBuilder.create<scf::YieldOp>(loc);
                           });
+                      koBuilder.create<scf::YieldOp>(loc);
                     });
+                joBuilder.create<scf::YieldOp>(loc);
               });
+          ioBuilder.create<scf::YieldOp>(loc);
         });
 
     rewriter.eraseOp(forI);
