@@ -262,6 +262,238 @@ struct ReturnOpLowering : public OpRewritePattern<toy::ReturnOp> {
   }
 };
 
+struct MatMulConfig {
+  Value c0;
+  Value c1;
+  Value mVal;
+  Value nVal;
+  Value kVal;
+  Value blockX;
+  Value blockY;
+  Value gridX;
+  Value gridY;
+  Value zero;
+};
+
+struct DeviceBuffers {
+  Value lhs;
+  Value rhs;
+  Value out;
+  Value token;
+};
+
+static MatMulConfig createMatMulConfig(Location loc, MemRefType lhsType,
+                                       MemRefType rhsType,
+                                       PatternRewriter &rewriter) {
+  int64_t m = lhsType.getShape()[0];
+  int64_t k = lhsType.getShape()[1];
+  int64_t n = rhsType.getShape()[1];
+  constexpr int64_t blockSize = 16;
+
+  MatMulConfig config;
+  config.c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  config.c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  config.mVal = rewriter.create<arith::ConstantIndexOp>(loc, m);
+  config.nVal = rewriter.create<arith::ConstantIndexOp>(loc, n);
+  config.kVal = rewriter.create<arith::ConstantIndexOp>(loc, k);
+  config.blockX = rewriter.create<arith::ConstantIndexOp>(loc, blockSize);
+  config.blockY = rewriter.create<arith::ConstantIndexOp>(loc, blockSize);
+  config.gridX = rewriter.create<arith::ConstantIndexOp>(
+      loc, (n + blockSize - 1) / blockSize);
+  config.gridY = rewriter.create<arith::ConstantIndexOp>(
+      loc, (m + blockSize - 1) / blockSize);
+  config.zero =
+      rewriter.create<arith::ConstantOp>(loc, rewriter.getF64FloatAttr(0.0));
+  return config;
+}
+
+static DeviceBuffers createDeviceBuffersAndCopies(Location loc,
+                                                  ArrayRef<Value> operands,
+                                                  MemRefType lhsType,
+                                                  MemRefType rhsType,
+                                                  MemRefType outType,
+                                                  PatternRewriter &rewriter) {
+  Type asyncTokenType = gpu::AsyncTokenType::get(rewriter.getContext());
+  Value token =
+      rewriter.create<gpu::WaitOp>(loc, asyncTokenType, ValueRange{})
+          .getAsyncToken();
+
+  auto lhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
+      loc, lhsType, asyncTokenType, ValueRange{token}, ValueRange{},
+      ValueRange{}, false);
+  token = lhsDeviceAlloc.getAsyncToken();
+  auto rhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
+      loc, rhsType, asyncTokenType, ValueRange{token}, ValueRange{},
+      ValueRange{}, false);
+  token = rhsDeviceAlloc.getAsyncToken();
+  auto outDeviceAlloc = rewriter.create<gpu::AllocOp>(
+      loc, outType, asyncTokenType, ValueRange{token}, ValueRange{},
+      ValueRange{}, false);
+  token = outDeviceAlloc.getAsyncToken();
+
+  Value lhsDevice = lhsDeviceAlloc.getMemref();
+  Value rhsDevice = rhsDeviceAlloc.getMemref();
+  Value outDevice = outDeviceAlloc.getMemref();
+
+  token = rewriter
+              .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                     lhsDevice, operands[0])
+              .getAsyncToken();
+  token = rewriter
+              .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                     rhsDevice, operands[1])
+              .getAsyncToken();
+
+  return {lhsDevice, rhsDevice, outDevice, token};
+}
+
+static Value createPaddedTileLoad(OpBuilder &builder, Location loc,
+                                  Value memref, ValueRange indices,
+                                  Value inBounds, Value zero,
+                                  Type elementType) {
+  auto loadIf = builder.create<scf::IfOp>(
+      loc, TypeRange{elementType}, inBounds,
+      /*withElseRegion=*/true);
+  OpBuilder thenBuilder = loadIf.getThenBodyBuilder(builder.getListener());
+  Value loaded = thenBuilder.create<memref::LoadOp>(loc, memref, indices);
+  thenBuilder.create<scf::YieldOp>(loc, loaded);
+  OpBuilder elseBuilder = loadIf.getElseBodyBuilder(builder.getListener());
+  elseBuilder.create<scf::YieldOp>(loc, zero);
+  return loadIf.getResult(0);
+}
+
+static Value createInnerTileReduction(OpBuilder &builder, Location loc,
+                                      const MatMulConfig &config, Value acc,
+                                      Value lhsTile, Value rhsTile,
+                                      gpu::KernelDim3 threadIds) {
+  auto forK = builder.create<scf::ForOp>(
+      loc, config.c0, config.blockX, config.c1, ValueRange{acc},
+      [&](OpBuilder &innerBuilder, Location loc, Value ivInnerK,
+          ValueRange innerIterArgs) {
+        Value innerAcc = innerIterArgs[0];
+        Value tiledLhs = innerBuilder.create<memref::LoadOp>(
+            loc, lhsTile, ValueRange{threadIds.y, ivInnerK});
+        Value tiledRhs = innerBuilder.create<memref::LoadOp>(
+            loc, rhsTile, ValueRange{ivInnerK, threadIds.x});
+        Value prod =
+            innerBuilder.create<arith::MulFOp>(loc, tiledLhs, tiledRhs);
+        Value sum = innerBuilder.create<arith::AddFOp>(loc, innerAcc, prod);
+        innerBuilder.create<scf::YieldOp>(loc, sum);
+      });
+  return forK.getResult(0);
+}
+
+static gpu::LaunchOp createTiledMatMulLaunch(Location loc,
+                                             const MatMulConfig &config,
+                                             MemRefType memRefType,
+                                             const DeviceBuffers &buffers,
+                                             PatternRewriter &rewriter) {
+  constexpr int64_t blockSize = 16;
+  Type asyncTokenType = gpu::AsyncTokenType::get(rewriter.getContext());
+
+  auto workgroupAddrSpace =
+      gpu::AddressSpaceAttr::get(rewriter.getContext(),
+                                 gpu::AddressSpace::Workgroup);
+  auto tileType =
+      MemRefType::get({blockSize, blockSize}, memRefType.getElementType(),
+                      MemRefLayoutAttrInterface{},
+                      Attribute(workgroupAddrSpace));
+  SmallVector<Type, 2> tileTypes{tileType, tileType};
+  auto launch = rewriter.create<gpu::LaunchOp>(
+      loc, config.gridX, config.gridY, config.c1, config.blockX, config.blockY,
+      config.c1,
+      /*dynamicSharedMemorySize=*/Value(), asyncTokenType,
+      ValueRange{buffers.token}, tileTypes);
+  unsigned firstWorkgroupArg = launch.getNumConfigRegionAttributes();
+  Value lhsTile = launch.getBody().getArgument(firstWorkgroupArg);
+  Value rhsTile = launch.getBody().getArgument(firstWorkgroupArg + 1);
+  gpu::KernelDim3 blockIds = launch.getBlockIds();
+  gpu::KernelDim3 threadIds = launch.getThreadIds();
+
+  rewriter.setInsertionPointToStart(&launch.getBody().front());
+  Value jBlock =
+      rewriter.create<arith::MulIOp>(loc, blockIds.x, config.blockX);
+  Value j = rewriter.create<arith::AddIOp>(loc, jBlock, threadIds.x);
+  Value iBlock =
+      rewriter.create<arith::MulIOp>(loc, blockIds.y, config.blockY);
+  Value i = rewriter.create<arith::AddIOp>(loc, iBlock, threadIds.y);
+
+  Value inM = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, i,
+                                             config.mVal);
+  Value inN = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, j,
+                                             config.nVal);
+  Value inBounds = rewriter.create<arith::AndIOp>(loc, inM, inN);
+
+  auto forKTile = rewriter.create<scf::ForOp>(
+      loc, config.c0, config.kVal, config.blockX, ValueRange{config.zero},
+      [&](OpBuilder &nestedBuilder, Location loc, Value ivK,
+          ValueRange iterArgs) {
+        Value acc = iterArgs[0];
+        Value lhsK =
+            nestedBuilder.create<arith::AddIOp>(loc, ivK, threadIds.x);
+        Value rhsK =
+            nestedBuilder.create<arith::AddIOp>(loc, ivK, threadIds.y);
+        Value lhsInK = nestedBuilder.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ult, lhsK, config.kVal);
+        Value lhsInBounds =
+            nestedBuilder.create<arith::AndIOp>(loc, inM, lhsInK);
+        Value rhsInK = nestedBuilder.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ult, rhsK, config.kVal);
+        Value rhsInBounds =
+            nestedBuilder.create<arith::AndIOp>(loc, rhsInK, inN);
+        Value lhs = createPaddedTileLoad(
+            nestedBuilder, loc, buffers.lhs, ValueRange{i, lhsK}, lhsInBounds,
+            config.zero, memRefType.getElementType());
+        Value rhs = createPaddedTileLoad(
+            nestedBuilder, loc, buffers.rhs, ValueRange{rhsK, j}, rhsInBounds,
+            config.zero, memRefType.getElementType());
+        nestedBuilder.create<memref::StoreOp>(
+            loc, lhs, lhsTile, ValueRange{threadIds.y, threadIds.x});
+        nestedBuilder.create<memref::StoreOp>(
+            loc, rhs, rhsTile, ValueRange{threadIds.y, threadIds.x});
+        nestedBuilder.create<gpu::BarrierOp>(loc);
+
+        Value sum = createInnerTileReduction(nestedBuilder, loc, config, acc,
+                                             lhsTile, rhsTile, threadIds);
+        nestedBuilder.create<gpu::BarrierOp>(loc);
+        nestedBuilder.create<scf::YieldOp>(loc, sum);
+      });
+
+  auto storeIf = rewriter.create<scf::IfOp>(loc, inBounds,
+                                            /*withElseRegion=*/false);
+  rewriter.setInsertionPointToStart(storeIf.thenBlock());
+  rewriter.create<memref::StoreOp>(loc, forKTile.getResult(0), buffers.out,
+                                   ValueRange{i, j});
+  rewriter.setInsertionPointToEnd(&launch.getBody().front());
+  rewriter.create<gpu::TerminatorOp>(loc);
+  return launch;
+}
+
+static Value createCopyBackAndCleanup(Location loc, Value hostOut,
+                                      const DeviceBuffers &buffers,
+                                      PatternRewriter &rewriter) {
+  Type asyncTokenType = gpu::AsyncTokenType::get(rewriter.getContext());
+  Value token = buffers.token;
+  token = rewriter
+              .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
+                                     hostOut, buffers.out)
+              .getAsyncToken();
+  token = rewriter
+              .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                      buffers.lhs)
+              .getAsyncToken();
+  token = rewriter
+              .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                      buffers.rhs)
+              .getAsyncToken();
+  token = rewriter
+              .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
+                                      buffers.out)
+              .getAsyncToken();
+  rewriter.create<gpu::WaitOp>(loc, Type(), ValueRange{token});
+  return token;
+}
+
 struct MatMulOpLowering : public ConversionPattern {
   MatMulOpLowering(MLIRContext *ctx)
       : ConversionPattern(toy::MatMulOp::getOperationName(), 1, ctx) {}
@@ -277,179 +509,14 @@ struct MatMulOpLowering : public ConversionPattern {
 
     auto lhsType = llvm::cast<MemRefType>(operands[0].getType());
     auto rhsType = llvm::cast<MemRefType>(operands[1].getType());
-    Type asyncTokenType = gpu::AsyncTokenType::get(rewriter.getContext());
-    Value token =
-        rewriter.create<gpu::WaitOp>(loc, asyncTokenType, ValueRange{})
-            .getAsyncToken();
-
-    auto lhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
-        loc, lhsType, asyncTokenType, ValueRange{token}, ValueRange{},
-        ValueRange{}, false);
-    token = lhsDeviceAlloc.getAsyncToken();
-    auto rhsDeviceAlloc = rewriter.create<gpu::AllocOp>(
-        loc, rhsType, asyncTokenType, ValueRange{token}, ValueRange{},
-        ValueRange{}, false);
-    token = rhsDeviceAlloc.getAsyncToken();
-    auto outDeviceAlloc = rewriter.create<gpu::AllocOp>(
-        loc, memRefType, asyncTokenType, ValueRange{token}, ValueRange{},
-        ValueRange{}, false);
-    token = outDeviceAlloc.getAsyncToken();
-    Value lhsDevice = lhsDeviceAlloc.getMemref();
-    Value rhsDevice = rhsDeviceAlloc.getMemref();
-    Value outDevice = outDeviceAlloc.getMemref();
-
-    token = rewriter
-                .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
-                                       lhsDevice, operands[0])
-                .getAsyncToken();
-    token = rewriter
-                .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
-                                       rhsDevice, operands[1])
-                .getAsyncToken();
-
-    int64_t m = lhsType.getShape()[0];
-    int64_t k = lhsType.getShape()[1];
-    int64_t n = rhsType.getShape()[1];
-    constexpr int64_t blockSize = 16;
-
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    Value mVal = rewriter.create<arith::ConstantIndexOp>(loc, m);
-    Value nVal = rewriter.create<arith::ConstantIndexOp>(loc, n);
-    Value kVal = rewriter.create<arith::ConstantIndexOp>(loc, k);
-    Value blockX = rewriter.create<arith::ConstantIndexOp>(loc, blockSize);
-    Value blockY = rewriter.create<arith::ConstantIndexOp>(loc, blockSize);
-    Value gridX = rewriter.create<arith::ConstantIndexOp>(
-        loc, (n + blockSize - 1) / blockSize);
-    Value gridY = rewriter.create<arith::ConstantIndexOp>(
-        loc, (m + blockSize - 1) / blockSize);
-    Value zero = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getF64FloatAttr(0.0));
-
-    auto workgroupAddrSpace =
-        gpu::AddressSpaceAttr::get(rewriter.getContext(),
-                                   gpu::AddressSpace::Workgroup);
-    auto tileType = MemRefType::get({blockSize, blockSize},
-                                    memRefType.getElementType(),
-                                    MemRefLayoutAttrInterface{},
-                                    Attribute(workgroupAddrSpace));
-    SmallVector<Type, 2> tileTypes{tileType, tileType};
-    auto launch = rewriter.create<gpu::LaunchOp>(
-        loc, gridX, gridY, c1, blockX, blockY, c1,
-        /*dynamicSharedMemorySize=*/Value(), asyncTokenType, ValueRange{token},
-        tileTypes);
-    token = launch.getAsyncToken();
-    unsigned firstWorkgroupArg = launch.getNumConfigRegionAttributes();
-    Value lhsTile = launch.getBody().getArgument(firstWorkgroupArg);
-    Value rhsTile = launch.getBody().getArgument(firstWorkgroupArg + 1);
-    gpu::KernelDim3 blockIds = launch.getBlockIds();
-    gpu::KernelDim3 threadIds = launch.getThreadIds();
-
-    rewriter.setInsertionPointToStart(&launch.getBody().front());
-    Value jBlock = rewriter.create<arith::MulIOp>(loc, blockIds.x, blockX);
-    Value j = rewriter.create<arith::AddIOp>(loc, jBlock, threadIds.x);
-    Value iBlock = rewriter.create<arith::MulIOp>(loc, blockIds.y, blockY);
-    Value i = rewriter.create<arith::AddIOp>(loc, iBlock, threadIds.y);
-
-    Value inM =
-        rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, i, mVal);
-    Value inN =
-        rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, j, nVal);
-    Value inBounds = rewriter.create<arith::AndIOp>(loc, inM, inN);
-
-    auto forKTile = rewriter.create<scf::ForOp>(
-        loc, c0, kVal, blockX, ValueRange{zero},
-        [&](OpBuilder &nestedBuilder, Location loc, Value ivK,
-            ValueRange iterArgs) {
-          Value acc = iterArgs[0];
-          Value lhsK =
-              nestedBuilder.create<arith::AddIOp>(loc, ivK, threadIds.x);
-          Value rhsK =
-              nestedBuilder.create<arith::AddIOp>(loc, ivK, threadIds.y);
-          Value lhsInK = nestedBuilder.create<arith::CmpIOp>(
-              loc, arith::CmpIPredicate::ult, lhsK, kVal);
-          Value lhsInBounds =
-              nestedBuilder.create<arith::AndIOp>(loc, inM, lhsInK);
-          Value rhsInK = nestedBuilder.create<arith::CmpIOp>(
-              loc, arith::CmpIPredicate::ult, rhsK, kVal);
-          Value rhsInBounds =
-              nestedBuilder.create<arith::AndIOp>(loc, rhsInK, inN);
-          auto lhsIf = nestedBuilder.create<scf::IfOp>(
-              loc, TypeRange{memRefType.getElementType()}, lhsInBounds,
-              /*withElseRegion=*/true);
-          OpBuilder lhsThenBuilder =
-              lhsIf.getThenBodyBuilder(nestedBuilder.getListener());
-          Value lhs = lhsThenBuilder.create<memref::LoadOp>(
-              loc, lhsDevice, ValueRange{i, lhsK});
-          lhsThenBuilder.create<scf::YieldOp>(loc, lhs);
-          OpBuilder lhsElseBuilder =
-              lhsIf.getElseBodyBuilder(nestedBuilder.getListener());
-          lhsElseBuilder.create<scf::YieldOp>(loc, zero);
-
-          auto rhsIf = nestedBuilder.create<scf::IfOp>(
-              loc, TypeRange{memRefType.getElementType()}, rhsInBounds,
-              /*withElseRegion=*/true);
-          OpBuilder rhsThenBuilder =
-              rhsIf.getThenBodyBuilder(nestedBuilder.getListener());
-          Value rhs = rhsThenBuilder.create<memref::LoadOp>(
-              loc, rhsDevice, ValueRange{rhsK, j});
-          rhsThenBuilder.create<scf::YieldOp>(loc, rhs);
-          OpBuilder rhsElseBuilder =
-              rhsIf.getElseBodyBuilder(nestedBuilder.getListener());
-          rhsElseBuilder.create<scf::YieldOp>(loc, zero);
-          nestedBuilder.create<memref::StoreOp>(
-              loc, lhsIf.getResult(0), lhsTile,
-              ValueRange{threadIds.y, threadIds.x});
-          nestedBuilder.create<memref::StoreOp>(
-              loc, rhsIf.getResult(0), rhsTile,
-              ValueRange{threadIds.y, threadIds.x});
-          nestedBuilder.create<gpu::BarrierOp>(loc);
-
-          auto forK = nestedBuilder.create<scf::ForOp>(
-              loc, c0, blockX, c1, ValueRange{acc},
-              [&](OpBuilder &innerBuilder, Location loc, Value ivInnerK,
-                  ValueRange innerIterArgs) {
-                Value innerAcc = innerIterArgs[0];
-                Value tiledLhs = innerBuilder.create<memref::LoadOp>(
-                    loc, lhsTile, ValueRange{threadIds.y, ivInnerK});
-                Value tiledRhs = innerBuilder.create<memref::LoadOp>(
-                    loc, rhsTile, ValueRange{ivInnerK, threadIds.x});
-                Value prod =
-                    innerBuilder.create<arith::MulFOp>(loc, tiledLhs, tiledRhs);
-                Value sum =
-                    innerBuilder.create<arith::AddFOp>(loc, innerAcc, prod);
-                innerBuilder.create<scf::YieldOp>(loc, sum);
-              });
-          nestedBuilder.create<gpu::BarrierOp>(loc);
-          nestedBuilder.create<scf::YieldOp>(loc, forK.getResult(0));
-        });
-
-    auto storeIf = rewriter.create<scf::IfOp>(loc, inBounds,
-                                              /*withElseRegion=*/false);
-    rewriter.setInsertionPointToStart(storeIf.thenBlock());
-    rewriter.create<memref::StoreOp>(loc, forKTile.getResult(0), outDevice,
-                                     ValueRange{i, j});
-    rewriter.setInsertionPointToEnd(&launch.getBody().front());
-    rewriter.create<gpu::TerminatorOp>(loc);
-
+    DeviceBuffers buffers = createDeviceBuffersAndCopies(
+        loc, operands, lhsType, rhsType, memRefType, rewriter);
+    MatMulConfig config = createMatMulConfig(loc, lhsType, rhsType, rewriter);
+    gpu::LaunchOp launch =
+        createTiledMatMulLaunch(loc, config, memRefType, buffers, rewriter);
+    buffers.token = launch.getAsyncToken();
     rewriter.setInsertionPointAfter(launch);
-    token = rewriter
-                .create<gpu::MemcpyOp>(loc, asyncTokenType, ValueRange{token},
-                                       alloc, outDevice)
-                .getAsyncToken();
-    token = rewriter
-                .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
-                                        lhsDevice)
-                .getAsyncToken();
-    token = rewriter
-                .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
-                                        rhsDevice)
-                .getAsyncToken();
-    token = rewriter
-                .create<gpu::DeallocOp>(loc, asyncTokenType, ValueRange{token},
-                                        outDevice)
-                .getAsyncToken();
-    rewriter.create<gpu::WaitOp>(loc, Type(), ValueRange{token});
+    createCopyBackAndCleanup(loc, alloc, buffers, rewriter);
 
     rewriter.replaceOp(op, alloc);
     return success();
